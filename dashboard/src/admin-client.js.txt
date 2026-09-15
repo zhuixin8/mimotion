@@ -23,13 +23,13 @@ $('admin-login-form').onsubmit=e=>{e.preventDefault();action(async()=>{const key
 $('admin-logout').onclick=()=>action(async()=>{await api('logout',{});await load();notice('已退出管理后台。');});
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>action(()=>showTab(b.dataset.tab)));
 $('create-codes-form').onsubmit=e=>{e.preventDefault();action(async()=>{const valid=$('code-valid-until').value;const r=await api('codes/create',{days:$('code-days').value,count:$('code-count').value,note:$('code-note').value,valid_until:valid?Math.floor(Date.parse(valid+'+08:00')/1000):null});generated=r.codes.map(c=>c.code+' | '+c.days+' 天').join('\n');$('generated-codes').value=generated;$('generated-panel').hidden=false;pages.codes=0;await codes();await overview();notice('已生成 '+r.codes.length+' 个激活码。可下载后分发给用户。');});};
-$('download-codes').onclick=()=>download('MiMotion-activation-codes.txt',generated);
+$('download-codes').onclick=()=>download('轻步云-activation-codes.txt',generated);
 $('codes-filter').onchange=()=>action(async()=>{pages.codes=0;await codes();});
 $('refresh-codes').onclick=()=>action(codes);$('refresh-audit').onclick=()=>action(audit);
 $('search-users').onsubmit=e=>{e.preventDefault();action(async()=>{pages.users=0;await users();});};
 for(const name of ['codes','users','audit','issues'])for(const direction of ['prev','next'])$(name+'-'+direction).onclick=()=>action(async()=>{if(direction==='prev'&&pages[name]>0)pages[name]--;if(direction==='next'&&more[name])pages[name]++;await loaders[name]();});
 $('rotate-key').onclick=()=>action(async()=>{if(!$('rotate-confirm').checked)throw new Error('请先勾选更换密钥确认。');const r=await api('rotate-key',{confirm:true});newKey=r.key;$('new-key').value=newKey;$('new-key-panel').hidden=false;await load();notice('密钥已更换。请保存新密钥，旧密钥已经失效。');});
-$('download-key').onclick=()=>download('MiMotion-admin-key.txt',newKey);
+$('download-key').onclick=()=>download('轻步云-admin-key.txt',newKey);
 
 function giftPreview(){const n=Number($('site-gift-days').value),open=$('site-registration').checked,valid=$('site-gift-days').value!==''&&Number.isSafeInteger(n)&&n>=0&&n<=3650;$('gift-preview-title').textContent=!open?'新用户注册已关闭':!valid?'请填写有效天数':n>0?'首次注册赠送 '+n+' 天':'新用户不赠送使用期';$('gift-preview-description').textContent=!open?'当前仅已有用户可登录。开放注册后按设置的天数赠送。':!valid?'请输入 0–3650 的整数。':n>0?'验证 Zepp 账号并首次注册成功后，自动开通使用期。':'注册后需兑换激活码开通。';}
 $('site-gift-days').oninput=giftPreview;$('site-registration').onchange=giftPreview;
