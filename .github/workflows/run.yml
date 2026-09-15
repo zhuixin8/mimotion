@@ -40,6 +40,7 @@ jobs:
         env:
           CONFIG: ${{ secrets.CONFIG }}
           AES_KEY: ${{ secrets.AES_KEY }}
+          LOGIN_TOKENS: ${{ secrets.LOGIN_TOKENS }}
         run: python main.py
 
       - name: 保存加密登录状态
@@ -57,3 +58,4 @@ jobs:
           git config user.email github-actions@users.noreply.github.com
           git commit -m "Persist encrypted login tokens"
           git push origin HEAD:master
+

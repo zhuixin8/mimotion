@@ -125,7 +125,7 @@ class MiMotionRunner:
             if self.device_id is None:
                 self.device_id = str(uuid.uuid4())
                 user_token_info["device_id"] = self.device_id
-            ok, msg = zeppHelper.check_app_token(app_token)
+            ok, msg = zeppHelper.check_app_token(app_token, self.user_id)
             if ok:
                 self.log_str += "使用加密保存的app_token\n"
                 return app_token
@@ -216,11 +216,10 @@ def run_single_account(total, idx, user_mi, passwd_mi):
         log_str += f'{exec_msg}\n'
         exec_result = {"user": user_mi, "success": success,
                        "msg": exec_msg}
-    except:
-        log_str += f"执行异常:{traceback.format_exc()}\n"
-        log_str += traceback.format_exc()
+    except Exception as exc:
+        log_str += f"执行异常：{type(exc).__name__}，请检查网络或账号配置。\n"
         exec_result = {"user": user_mi, "success": False,
-                       "msg": f"执行异常:{traceback.format_exc()}"}
+                       "msg": "执行异常，请检查网络或账号配置。"}
     print(log_str)
     return exec_result
 
@@ -261,19 +260,8 @@ def execute():
 
 
 def prepare_user_tokens() -> dict:
-    data_path = r"encrypted_tokens.data"
-    if os.path.exists(data_path):
-        with open(data_path, 'rb') as f:
-            data = f.read()
-        try:
-            decrypted_data = decrypt_data(data, aes_key, None)
-            # 假设原始明文为 UTF-8 编码文本
-            return json.loads(decrypted_data.decode('utf-8', errors='strict'))
-        except:
-            print("密钥不正确或者加密内容损坏 放弃token")
-            return dict()
-    else:
-        return dict()
+    from util.token_cache import restore_tokens
+    return restore_tokens(aes_key, os.environ.get("LOGIN_TOKENS", ""))
 
 
 def persist_user_tokens():
@@ -356,3 +344,4 @@ if __name__ == "__main__":
         use_concurrent = False
     # endregion
     raise SystemExit(execute())
+
