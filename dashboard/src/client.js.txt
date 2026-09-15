@@ -1,28 +1,61 @@
-const $ = id => document.getElementById(id);
-let state = null, busy = false;
-function notice(text, error=false) { $('notice').textContent=text; $('notice').className='notice '+(error?'error':'success'); $('notice').hidden=!text; }
-async function api(path, data) {
+const $=id=>document.getElementById(id);
+let state=null,busy=false,polling=false,page=0,hasMore=false,nextPoll=0;
+const when=t=>t?new Date(t*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';
+const steps=n=>n===null||n===undefined?'未读取':n.toLocaleString()+' 步';
+const verifyLabels={checking:'正在读回核对',not_checked:'尚未核对',matched:'云端步数已达到目标',below_target:'云端步数暂未达到目标，可稍后核对',unavailable:'暂未读回步数，效果尚未核实',readable:'当天步数可读取'};
+function notice(text,error=false){$('notice').textContent=text;$('notice').className='notice '+(error?'error':'success');$('notice').hidden=!text;}
+async function api(path,data){
  const response=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json','X-CSRF-Token':state?.csrf||''},body:data===undefined?undefined:JSON.stringify(data),credentials:'same-origin'});
- let result; try { result=await response.json(); } catch { throw new Error('网站暂时没有返回有效响应，请刷新后重试。'); }
- if(!response.ok) throw new Error(result.error||'请求失败，请重试。'); return result;
+ let result;try{result=await response.json();}catch{throw new Error('网站暂时没有返回有效响应，请刷新后重试。');}
+ if(!response.ok)throw new Error(result.error||'请求失败，请重试。');return result;
 }
-async function action(fn) { if(busy)return; busy=true; const buttons=[...document.querySelectorAll('button')]; buttons.forEach(b=>b.disabled=true); try { await fn(); } catch(e) {notice(e.message,true);} finally {busy=false;buttons.forEach(b=>b.disabled=false);} }
-async function load() {
- state=await api('/api/status'); $('login-panel').hidden=state.signed_in; $('account-panel').hidden=!state.signed_in; $('history-panel').hidden=!state.signed_in;
- if(state.signed_in) {const a=state.account; $('account-label').textContent=a.label; $('min-step').value=a.min_step; $('max-step').value=a.max_step; $('enabled').checked=a.enabled; $('account-state').textContent=a.needs_login?'登录凭据已失效，请退出后重新登录，再开启计划。':a.enabled?'自动执行已开启，关闭网页也会继续。':'自动执行已暂停，可手动执行一次。'; await runs();}
+async function action(fn){if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){notice(e.message,true);}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+function resetHistory(){page=0;$('filter-status').value='all';$('filter-day').value='';}
+async function load(){
+ state=await api('/api/status');$('login-panel').hidden=state.signed_in;$('account-panel').hidden=!state.signed_in;$('history-panel').hidden=!state.signed_in;
+ if(state.signed_in){const a=state.account;$('account-label').textContent=a.label;$('min-step').value=a.min_step;$('max-step').value=a.max_step;$('enabled').checked=a.enabled;$('account-state').textContent=a.needs_login?'登录凭据已失效，请退出后重新登录，再开启计划。':a.enabled?'自动执行已开启，关闭网页也会继续。':'自动执行已暂停，可手动执行一次。';await runs();}
+ else{$('runs-list').replaceChildren();$('connection-result').textContent='尚未测试';}
 }
-async function runs() {
- const {runs}=await api('/api/runs'); const box=$('runs-list');box.replaceChildren();
- if(!runs.length){box.textContent='还没有执行记录。保存计划后，可点击「立即执行一次」。';return;}
- const labels={pending:'等待排队',queued:'排队中',running:'执行中',success:'成功',failed:'失败',unknown:'结果待确认',skipped:'已跳过'};
- for(const r of runs){const row=document.createElement('div');row.className='run'; const info=document.createElement('div'); const title=document.createElement('strong');title.textContent=(r.kind==='schedule'?'自动':'手动')+' · '+r.step.toLocaleString()+' 步'; const detail=document.createElement('div'); detail.textContent=new Date(r.created_at*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' · '+r.message;info.append(title,detail);const status=document.createElement('strong');status.textContent=labels[r.status]||r.status;status.className=r.status==='success'?'success':['failed','unknown'].includes(r.status)?'failure':'pending';row.append(info,status);box.append(row);}
+function element(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
+async function runs(){
+ const session=state?.csrf;
+ const params=new URLSearchParams({page:String(page),filter:$('filter-status').value,day:$('filter-day').value});
+ const data=await api('/api/runs?'+params);if(!state?.signed_in||state.csrf!==session)return;
+ const box=$('runs-list');const expanded=new Set([...box.querySelectorAll('details[open]')].map(e=>e.dataset.id));box.replaceChildren();
+ $('stat-total').textContent=data.stats.total;$('stat-accepted').textContent=data.stats.accepted;$('stat-matched').textContent=data.stats.matched;
+ const c=data.check;$('connection-result').textContent=!c?'尚未测试，点击「重新测试」检查连接。':['pending','queued','running'].includes(c.status)?'正在测试连接，请稍候…':(c.status==='success'?'连接测试通过':'连接测试未通过')+' · '+c.message+(c.observed_step!==null?' '+c.day+' 云端：'+steps(c.observed_step):'')+' · '+when(c.finished_at||c.created_at);
+ hasMore=data.has_more;$('prev-page').hidden=page===0;$('next-page').hidden=!hasMore;$('page-label').textContent='第 '+(page+1)+' 页';
+ const active=data.stats.active||data.runs.some(r=>['pending','queued','running'].includes(r.status));nextPoll=Date.now()+(active?3000:30000);
+ $('history-update').textContent='更新于 '+when(Math.floor(Date.now()/1000))+(page===0?(active?' · 执行中每 3 秒刷新':' · 每 30 秒刷新'):' · 翻页期间暂停自动刷新');
+ if(!data.runs.length){box.textContent='没有符合条件的记录。登录后会自动进行连接测试，也可以点击「执行一次并核对效果」。';return;}
+ for(const r of data.runs){
+  const check=r.kind==='check',verification=r.kind==='verify',diagnostic=check||verification;
+  const names={manual:'手动执行',schedule:'自动执行',check:'只读连接测试',verify:'只读效果核对'};
+  const states={pending:'等待排队',queued:'排队中',running:'执行中',success:diagnostic?'测试完成':'接口已接收',failed:'失败',unknown:'提交结果待确认',skipped:'已跳过'};
+  const row=element('article',undefined,'run-record'),head=element('div',undefined,'record-head');
+  head.append(element('div',names[r.kind]+(check?'':' · 目标 '+steps(r.step)),'record-title'),element('span',r.verification==='matched'?'云端达到目标':states[r.status]||r.status,'badge '+(r.verification==='matched'?'good':['failed','unknown'].includes(r.status)?'attention':'')));
+  row.append(head,element('div',when(r.created_at)+' · 数据日期 '+r.day,'record-meta'),element('p',r.message+(diagnostic?'':' · '+(verifyLabels[r.verification]||'尚未核对')),'record-result'));
+  const detail=element('details');detail.dataset.id=r.id;detail.open=expanded.has(r.id);detail.append(element('summary','查看测试过程与步数对比'));
+  const grid=element('div',undefined,'record-details');
+  const diff=typeof r.before_step==='number'&&typeof r.observed_step==='number'?((r.observed_step-r.before_step>=0?'+':'')+(r.observed_step-r.before_step)+' 步'):'无法比较';
+  for(const [label,value] of [['任务编号',r.id],['开始 / 完成',when(r.started_at)+' / '+when(r.finished_at)],['提交前读数',check||verification?'本次不提交':steps(r.before_step)],['核对时云端读数',steps(r.observed_step)],['读数变化',diagnostic?'本次只查询':diff],['核对结果',verifyLabels[r.verification]||'尚未核对'],['最近核对时间',when(r.checked_at)]]){const cell=element('div');cell.append(element('span',label),element('strong',value));grid.append(cell);}
+  if(r.parent_id){const cell=element('div');cell.append(element('span','对应执行记录'),element('strong',r.parent_id));grid.append(cell);}
+  detail.append(grid,element('p','读回数值仅反映 Zepp 云端记录，不证明第三方 App 已同步，也不能排除其他设备同时写入。','hint'));
+  if(!diagnostic&&['success','unknown'].includes(r.status)){const button=element('button','重新核对（不重新提交）','text-button');button.type='button';button.onclick=()=>action(async()=>{await api('/api/verify',{id:r.id});resetHistory();await runs();notice('已安排只读核对，稍后自动更新原记录的核对结果。');});detail.append(button);}
+  row.append(detail);box.append(row);
+ }
 }
 $('toggle-password').onclick=()=>{const p=$('password');p.type=p.type==='password'?'text':'password';$('toggle-password').textContent=p.type==='password'?'显示':'隐藏';};
-$('login-form').onsubmit=e=>{e.preventDefault();action(async()=>{const data={account:$('account').value,password:$('password').value,min_step:18000,max_step:25000,consent:$('consent').checked};$('password').value='';notice('正在验证 Zepp Life，请稍候…');await api('/api/login',data);await load();notice('登录成功。请设置并保存自己的计划。');});};
+$('login-form').onsubmit=e=>{e.preventDefault();action(async()=>{const data={account:$('account').value,password:$('password').value,min_step:18000,max_step:25000,consent:$('consent').checked};$('password').value='';notice('正在验证 Zepp Life，请稍候…');await api('/api/login',data);resetHistory();await load();notice('登录成功，已安排只读连接测试。修改步数请点击「执行一次并核对效果」。');});};
 $('settings-form').onsubmit=e=>{e.preventDefault();action(async()=>{await api('/api/settings',{min_step:$('min-step').value,max_step:$('max-step').value,enabled:$('enabled').checked});await load();notice('计划已保存。');});};
-$('run-now').onclick=()=>action(async()=>{await api('/api/run',{});await runs();notice('任务已加入队列，请查看执行记录。');});
+$('test-connection').onclick=()=>action(async()=>{await api('/api/check',{});resetHistory();await runs();notice('已安排连接测试，不会修改步数。');});
+$('run-now').onclick=()=>action(async()=>{if(String(state.account.min_step)!==$('min-step').value||String(state.account.max_step)!==$('max-step').value)throw new Error('步数范围有未保存的修改，请先保存计划。');await api('/api/run',{});resetHistory();await runs();notice('任务已加入队列，将提交步数并读回核对。请查看下方记录。');});
 $('refresh-runs').onclick=()=>action(runs);
+$('history-filter').onsubmit=e=>{e.preventDefault();action(async()=>{page=0;await runs();});};
+$('reset-filter').onclick=()=>action(async()=>{resetHistory();await runs();});
+$('prev-page').onclick=()=>action(async()=>{if(page>0)page--;await runs();});
+$('next-page').onclick=()=>action(async()=>{if(hasMore)page++;await runs();});
 $('logout').onclick=()=>action(async()=>{await api('/api/logout',{});await load();notice('已退出登录。已开启的自动计划继续执行。');});
 $('delete-account').onclick=()=>action(async()=>{if(!$('confirm-delete').checked)throw new Error('请先勾选删除确认。');await api('/api/delete',{confirm:'DELETE'});await load();notice('本站账号、凭据和记录已删除。');});
 load().catch(e=>notice(e.message,true));
-setInterval(()=>{if(state?.signed_in&&!busy&&!document.hidden)runs().catch(()=>{});},30000);
+setInterval(async()=>{if(!state?.signed_in||busy||polling||document.hidden||page!==0||Date.now()<nextPoll)return;polling=true;try{await runs();}catch(e){$('history-update').textContent='刷新失败：'+e.message;nextPoll=Date.now()+30000;}finally{polling=false;}},1000);

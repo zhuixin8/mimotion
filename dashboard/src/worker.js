@@ -4,6 +4,7 @@ import client from './client.js.txt';
 import {random, equal, seal, open, UserError, readText, utf8, b64} from './security.js';
 import {loginZepp, validate} from './zepp.js';
 import {query, limit, seconds, enqueue, scheduled, consume} from './jobs.js';
+import {history} from './history.js';
 
 const COOKIE = '__Host-mimotion-user-v2';
 const json = (data, status=200) => new Response(JSON.stringify(data), {status,headers:{'content-type':'application/json; charset=utf-8'}});
@@ -56,6 +57,8 @@ async function route(request, env) {
       WHERE accounts.lease_until < ?`, id, verified.summary.account, await seal(tokens, env.MASTER_SECRET, 'zepp:' + id), v.lo, v.hi, version, t, t, Number(env.MAX_ACCOUNTS || 200), id, t).run();
     if (!result.meta.changes) throw new UserError('账号正在执行任务，或站点注册名额已满，请稍后再试。', 409);
     const s = {id,version,csrf:random(),exp:t+86400};
+    // Logging in schedules a read-only health check, never a step submission.
+    try { await enqueue(env,{id,min_step:v.lo,max_step:v.hi},'check'); } catch { /* The user can retry from the test panel. */ }
     const res = json({ok:true}); setCookie(res, await seal(s, env.MASTER_SECRET, 'user-session-v2')); return res;
   }
   const s = await session(request, env);
@@ -63,11 +66,20 @@ async function route(request, env) {
   if (!s) throw new UserError('请先登录自己的 Zepp Life 账号。', 401);
   if (request.method === 'POST' && !await equal(request.headers.get('X-CSRF-Token'), s.csrf)) throw new UserError('页面已过期，请刷新后重试。', 403);
   if (path === '/api/runs' && request.method === 'GET') {
-    const {results} = await query(env, 'SELECT id,kind,day,step,status,message,created_at FROM runs WHERE account_id=? ORDER BY created_at DESC,id DESC LIMIT 30', s.id).all();
-    return json({runs:results});
+    return json(await history(env,s.id,url));
   }
   if (request.method === 'POST') {
     await limit(env, 'write:' + s.id, 20, 60);
+    if (path === '/api/check' || path === '/api/verify') {
+      let source = null;
+      if (path === '/api/verify') {
+        if(typeof data.id !== 'string')throw new UserError('请选择要核对的执行记录。');
+        source = await query(env, "SELECT id,day,step FROM runs WHERE id=? AND account_id=? AND kind IN ('manual','schedule') AND status IN ('success','unknown')", data.id,s.id).first();
+        if(!source)throw new UserError('执行记录不存在或暂时无法核对。',404);
+      }
+      await limit(env,'check:'+s.id,1,60);
+      return json({ok:true,id:await enqueue(env,s.account,source?'verify':'check',Date.now(),source)},202);
+    }
     if (path === '/api/settings') {
       const v = validate({account:'validation@example.com',password:'unused',min_step:data.min_step,max_step:data.max_step});
       if (typeof data.enabled !== 'boolean') throw new UserError('请选择是否自动执行。');

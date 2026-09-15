@@ -1,0 +1,7 @@
+ALTER TABLE runs ADD COLUMN before_step INTEGER;
+ALTER TABLE runs ADD COLUMN observed_step INTEGER;
+ALTER TABLE runs ADD COLUMN verification TEXT NOT NULL DEFAULT 'not_checked';
+ALTER TABLE runs ADD COLUMN checked_at INTEGER;
+ALTER TABLE runs ADD COLUMN started_at INTEGER;
+ALTER TABLE runs ADD COLUMN finished_at INTEGER;
+ALTER TABLE runs ADD COLUMN parent_id TEXT;
