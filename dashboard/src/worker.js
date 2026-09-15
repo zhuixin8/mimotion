@@ -5,6 +5,10 @@ import {random, equal, seal, open, UserError, readText, utf8, b64} from './secur
 import {loginZepp, validate} from './zepp.js';
 import {query, limit, seconds, enqueue, scheduled, consume} from './jobs.js';
 import {history} from './history.js';
+import {membership,requireMembership,redeem,licenseHistory} from './licensing.js';
+import {adminRoute} from './admin.js';
+import adminHtml from './admin.html';
+import adminClient from './admin-client.js.txt';
 
 const COOKIE = '__Host-mimotion-user-v2';
 const json = (data, status=200) => new Response(JSON.stringify(data), {status,headers:{'content-type':'application/json; charset=utf-8'}});
@@ -22,13 +26,13 @@ async function session(request, env) {
     return account && account.session_version === s.version ? {...s, account} : null;
   } catch { return null; }
 }
-const publicAccount = a => ({label:a.label,min_step:a.min_step,max_step:a.max_step,enabled:!!a.enabled,needs_login:!!a.needs_login});
+const publicAccount = (a,access) => ({id:a.id,label:a.label,min_step:a.min_step,max_step:a.max_step,enabled:!!a.enabled,needs_login:!!a.needs_login,membership:access});
 async function route(request, env) {
   const url = new URL(request.url), path = url.pathname;
   if (url.origin !== env.APP_ORIGIN) throw new UserError('访问地址不正确。', 403);
   if (!['GET','POST'].includes(request.method)) throw new UserError('不支持的请求。', 405);
   if (request.method === 'GET') {
-    const assets = {'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript']};
+    const assets = {'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/admin':[adminHtml,'text/html'], '/admin/':[adminHtml,'text/html'], '/admin.js':[adminClient,'text/javascript']};
     if (assets[path]) return new Response(assets[path][0], {headers:{'content-type':assets[path][1]+'; charset=utf-8'}});
     if (path === '/favicon.ico') return new Response(null,{status:204});
   }
@@ -39,6 +43,7 @@ async function route(request, env) {
     try { data = JSON.parse(await readText(request, 4096)); } catch { throw new UserError('请求内容无效或过大。', 400); }
     if (!data || Array.isArray(data) || typeof data !== 'object') throw new UserError('请求内容无效。');
   }
+  if(path.startsWith('/api/admin/'))return adminRoute(request,env,url,data);
   if (path === '/api/login' && request.method === 'POST') {
     if (data.consent !== true) throw new UserError('请先同意保存加密登录凭据。');
     const v = validate(data);
@@ -56,21 +61,29 @@ async function route(request, env) {
       session_version=excluded.session_version,needs_login=0,updated_at=excluded.updated_at
       WHERE accounts.lease_until < ?`, id, verified.summary.account, await seal(tokens, env.MASTER_SECRET, 'zepp:' + id), v.lo, v.hi, version, t, t, Number(env.MAX_ACCOUNTS || 200), id, t).run();
     if (!result.meta.changes) throw new UserError('账号正在执行任务，或站点注册名额已满，请稍后再试。', 409);
+    await query(env,'INSERT INTO memberships(account_id,created_at,updated_at) VALUES(?,?,?) ON CONFLICT(account_id) DO NOTHING',id,t,t).run();
     const s = {id,version,csrf:random(),exp:t+86400};
     // Logging in schedules a read-only health check, never a step submission.
-    try { await enqueue(env,{id,min_step:v.lo,max_step:v.hi},'check'); } catch { /* The user can retry from the test panel. */ }
+    try { await requireMembership(env,id); await enqueue(env,{id,min_step:v.lo,max_step:v.hi},'check'); } catch { /* Inactive users can redeem a code after logging in. */ }
     const res = json({ok:true}); setCookie(res, await seal(s, env.MASTER_SECRET, 'user-session-v2')); return res;
   }
   const s = await session(request, env);
-  if (path === '/api/status' && request.method === 'GET') return json({signed_in:!!s,csrf:s?.csrf,account:s ? publicAccount(s.account) : null});
+  if (path === '/api/status' && request.method === 'GET') return json({signed_in:!!s,csrf:s?.csrf,account:s ? publicAccount(s.account,await membership(env,s.id)) : null});
   if (!s) throw new UserError('请先登录自己的 Zepp Life 账号。', 401);
   if (request.method === 'POST' && !await equal(request.headers.get('X-CSRF-Token'), s.csrf)) throw new UserError('页面已过期，请刷新后重试。', 403);
   if (path === '/api/runs' && request.method === 'GET') {
     return json(await history(env,s.id,url));
   }
+  if(path==='/api/license'&&request.method==='GET')return json(await licenseHistory(env,s.id));
   if (request.method === 'POST') {
     await limit(env, 'write:' + s.id, 20, 60);
+    if(path==='/api/redeem'){
+      await limit(env,'redeem:'+s.id,5,600);
+      if((await membership(env,s.id)).suspended)throw new UserError('账号已停用，请联系管理员。',403);
+      return json(await redeem(env,s.id,data.code));
+    }
     if (path === '/api/check' || path === '/api/verify') {
+      await requireMembership(env,s.id);
       let source = null;
       if (path === '/api/verify') {
         if(typeof data.id !== 'string')throw new UserError('请选择要核对的执行记录。');
@@ -83,11 +96,13 @@ async function route(request, env) {
     if (path === '/api/settings') {
       const v = validate({account:'validation@example.com',password:'unused',min_step:data.min_step,max_step:data.max_step});
       if (typeof data.enabled !== 'boolean') throw new UserError('请选择是否自动执行。');
+      if(data.enabled)await requireMembership(env,s.id);
       if (data.enabled && s.account.needs_login) throw new UserError('凭据已失效，请退出后重新登录。', 401);
       await query(env, 'UPDATE accounts SET min_step=?,max_step=?,enabled=?,updated_at=? WHERE id=?', v.lo,v.hi,Number(data.enabled),seconds(),s.id).run();
       return json({ok:true});
     }
     if (path === '/api/run') {
+      await requireMembership(env,s.id);
       if (s.account.needs_login) throw new UserError('凭据已失效，请退出后重新登录。', 401);
       await limit(env, 'run-minute:' + s.id, 1, 60);
       await limit(env, 'run-day:' + s.id, 6, 86400);

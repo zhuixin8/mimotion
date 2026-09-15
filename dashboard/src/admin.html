@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MiMotion · 管理后台</title><link rel="stylesheet" href="/style.css"><script src="/admin.js" defer></script></head>
+<body><header><a class="brand" href="/admin">MiMotion<span>.</span></a><a href="/">返回用户页面</a></header><main class="admin-main">
+<section class="intro"><div><div class="eyebrow">PLATFORM ADMIN</div><h1>管理用户与使用期</h1><p class="lede">生成激活码、调整权限，查看每一次开通与续期。</p></div><button class="text-button" id="admin-logout" hidden>退出后台</button></section>
+<div id="admin-notice" class="notice" role="status" hidden></div>
+<section class="card" id="admin-login"><h2>管理员登录</h2><form id="admin-login-form"><label for="admin-key">管理密钥</label><input id="admin-key" type="password" maxlength="128" autocomplete="current-password" required placeholder="输入管理员专用密钥"><button class="primary" type="submit">进入管理后台</button></form><p class="hint">管理密钥与 Zepp 密码、用户激活码不同。只有网站所有者应持有此密钥。</p></section>
+<section id="admin-workspace" hidden>
+<div id="admin-stats" class="stats admin-stats"></div>
+<nav class="admin-tabs" aria-label="管理功能"><button class="secondary-button" data-tab="codes">激活码</button><button class="secondary-button" data-tab="users">用户管理</button><button class="secondary-button" data-tab="audit">操作记录</button><button class="secondary-button" data-tab="security">管理安全</button></nav>
+<section id="tab-codes" class="admin-tab">
+<article class="card"><h2>生成激活码</h2><form id="create-codes-form" class="admin-form">
+<div><label for="code-days">使用时长（天）</label><input id="code-days" type="number" min="1" max="3650" value="30" required></div>
+<div><label for="code-count">生成数量</label><input id="code-count" type="number" min="1" max="20" value="5" required></div>
+<div><label for="code-valid-until">最晚兑换时间（北京时间，可留空）</label><input id="code-valid-until" type="datetime-local"></div>
+<div><label for="code-note">批次备注</label><input id="code-note" maxlength="100" placeholder="例如：月度用户 / 活动赠送"></div>
+<button type="submit" class="primary">生成激活码</button></form><p class="hint">每个码仅能兑换一次；兑换后增加完整的 N × 24 小时。最晚兑换时间只限制兑换，不改变已开通的使用期。</p>
+<div id="generated-panel" hidden><h3>本批激活码</h3><textarea id="generated-codes" readonly rows="6" aria-label="生成的激活码"></textarea><button id="download-codes" class="text-button">下载本批激活码</button></div></article>
+<article class="card"><div class="card-heading"><h2>激活码列表</h2><button class="text-button" id="refresh-codes">刷新</button></div><label for="codes-filter">状态</label><select id="codes-filter"><option value="all">全部</option><option value="unused">可兑换</option><option value="used">已兑换</option><option value="disabled">已停用</option><option value="expired">已过兑换期限</option></select><div id="codes-list"></div><div class="pagination"><button id="codes-prev" class="text-button">上一页</button><span id="codes-page"></span><button id="codes-next" class="text-button">下一页</button></div></article>
+</section>
+<section id="tab-users" class="admin-tab" hidden><article class="card"><h2>用户管理</h2><form id="search-users" class="history-filter"><input id="user-search" maxlength="100" aria-label="用户搜索" placeholder="输入用户编号或脱敏账号"><button class="text-button" type="submit">查找</button></form><p class="hint">用户页面显示用户编号，可用于准确定位。到期会停止新任务；续期或恢复后，原先开启的自动计划可继续。已经发出的请求无法撤回。</p><div id="users-list"></div><div class="pagination"><button id="users-prev" class="text-button">上一页</button><span id="users-page"></span><button id="users-next" class="text-button">下一页</button></div></article></section>
+<section id="tab-audit" class="admin-tab" hidden><article class="card"><div class="card-heading"><h2>管理与兑换记录</h2><button id="refresh-audit" class="text-button">刷新</button></div><div id="audit-list"></div><div class="pagination"><button id="audit-prev" class="text-button">上一页</button><span id="audit-page"></span><button id="audit-next" class="text-button">下一页</button></div></article></section>
+<section id="tab-security" class="admin-tab" hidden><article class="card"><h2>更换管理密钥</h2><p class="card-description">系统生成新的高强度随机密钥。旧密钥与所有后台会话立即失效，请保存新密钥后重新登录。</p><label class="consent"><input type="checkbox" id="rotate-confirm"><span>我已了解旧密钥会立即失效，并会妥善保存新密钥。</span></label><button class="danger-button" id="rotate-key">生成新管理密钥</button></article></section>
+</section>
+<section class="card" id="new-key-panel" hidden><h2>请保存新的管理密钥</h2><textarea id="new-key" readonly rows="3" aria-label="新的管理密钥"></textarea><button class="text-button" id="download-key">下载密钥</button><p class="hint">此值不会再次显示；保存后使用新密钥登录。不要发送给普通用户。</p></section>
+</main></body></html>

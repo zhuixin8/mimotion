@@ -2,6 +2,19 @@ const $=id=>document.getElementById(id);
 let state=null,busy=false,polling=false,page=0,hasMore=false,nextPoll=0;
 const when=t=>t?new Date(t*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';
 const steps=n=>n===null||n===undefined?'未读取':n.toLocaleString()+' 步';
+function syncAccess(access=state?.account?.membership){
+ if(state?.account&&access)state.account.membership=access;
+ const active=!!access?.active;
+ for(const id of ['run-now','test-connection'])$(id).disabled=busy||!active;
+ document.querySelectorAll('[data-member-action]').forEach(b=>b.disabled=busy||!active);
+ if(!access)return;
+ $('redeem-button').disabled=busy||access.suspended;
+ $('account-state').textContent=!active?'当前使用期无效，任务执行已暂停；设置和历史记录仍保留。':state.account.needs_login?'Zepp 凭据失效，请退出后重新登录。':state.account.enabled?'自动执行已开启，使用期内关闭网页也会继续。':'自动执行已暂停，可手动执行一次。';
+ $('membership-state').className='notice '+(access.active?'success':'error');
+ $('membership-state').textContent=access.suspended?'账号已被管理员停用，请联系管理员。':active?'使用期有效 · 到期时间：'+when(access.expires_at)+'（北京时间）':access.expires_at?'使用期已于 '+when(access.expires_at)+' 到期，请兑换激活码续期。':'尚未激活，请兑换激活码开通。';
+ $('member-reference').textContent='用户编号：'+state.account.id;
+}
+async function licenses(){const d=await api('/api/license');syncAccess(d.membership);const box=$('redemption-list');box.replaceChildren();if(!d.redemptions.length)box.textContent='暂无激活码兑换记录。';for(const r of d.redemptions){const item=element('div',undefined,'run');item.textContent=r.hint+' · '+r.duration_days+' 天 · '+when(r.created_at)+' · 兑换后到期 '+when(r.new_expiry);box.append(item);}}
 const verifyLabels={checking:'正在读回核对',not_checked:'尚未核对',matched:'云端步数已达到目标',below_target:'云端步数暂未达到目标，可稍后核对',unavailable:'暂未读回步数，效果尚未核实',readable:'当天步数可读取'};
 function notice(text,error=false){$('notice').textContent=text;$('notice').className='notice '+(error?'error':'success');$('notice').hidden=!text;}
 async function api(path,data){
@@ -9,11 +22,11 @@ async function api(path,data){
  let result;try{result=await response.json();}catch{throw new Error('网站暂时没有返回有效响应，请刷新后重试。');}
  if(!response.ok)throw new Error(result.error||'请求失败，请重试。');return result;
 }
-async function action(fn){if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){notice(e.message,true);}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+async function action(fn){if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){notice(e.message,true);}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);syncAccess();}}
 function resetHistory(){page=0;$('filter-status').value='all';$('filter-day').value='';}
 async function load(){
- state=await api('/api/status');$('login-panel').hidden=state.signed_in;$('account-panel').hidden=!state.signed_in;$('history-panel').hidden=!state.signed_in;
- if(state.signed_in){const a=state.account;$('account-label').textContent=a.label;$('min-step').value=a.min_step;$('max-step').value=a.max_step;$('enabled').checked=a.enabled;$('account-state').textContent=a.needs_login?'登录凭据已失效，请退出后重新登录，再开启计划。':a.enabled?'自动执行已开启，关闭网页也会继续。':'自动执行已暂停，可手动执行一次。';await runs();}
+ state=await api('/api/status');$('login-panel').hidden=state.signed_in;$('account-panel').hidden=!state.signed_in;$('history-panel').hidden=!state.signed_in;$('membership-panel').hidden=!state.signed_in;
+ if(state.signed_in){const a=state.account;$('account-label').textContent=a.label;$('min-step').value=a.min_step;$('max-step').value=a.max_step;$('enabled').checked=a.enabled;$('account-state').textContent=a.needs_login?'登录凭据已失效，请退出后重新登录，再开启计划。':a.enabled?'自动执行已开启，关闭网页也会继续。':'自动执行已暂停，可手动执行一次。';await runs();await licenses();}
  else{$('runs-list').replaceChildren();$('connection-result').textContent='尚未测试';}
 }
 function element(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
@@ -21,13 +34,13 @@ async function runs(){
  const session=state?.csrf;
  const params=new URLSearchParams({page:String(page),filter:$('filter-status').value,day:$('filter-day').value});
  const data=await api('/api/runs?'+params);if(!state?.signed_in||state.csrf!==session)return;
- const box=$('runs-list');const expanded=new Set([...box.querySelectorAll('details[open]')].map(e=>e.dataset.id));box.replaceChildren();
+ syncAccess(data.membership);const box=$('runs-list');const expanded=new Set([...box.querySelectorAll('details[open]')].map(e=>e.dataset.id));box.replaceChildren();
  $('stat-total').textContent=data.stats.total;$('stat-accepted').textContent=data.stats.accepted;$('stat-matched').textContent=data.stats.matched;
- const c=data.check;$('connection-result').textContent=!c?'尚未测试，点击「重新测试」检查连接。':['pending','queued','running'].includes(c.status)?'正在测试连接，请稍候…':(c.status==='success'?'连接测试通过':'连接测试未通过')+' · '+c.message+(c.observed_step!==null?' '+c.day+' 云端：'+steps(c.observed_step):'')+' · '+when(c.finished_at||c.created_at);
+ const c=data.check;$('connection-result').textContent=!c?(state.account.membership.active?'尚未测试，点击「重新测试」检查连接。':'使用期有效后可测试账号连接。'):['pending','queued','running'].includes(c.status)?'正在测试连接，请稍候…':(c.status==='success'?'连接测试通过':'连接测试未通过')+' · '+c.message+(c.observed_step!==null?' '+c.day+' 云端：'+steps(c.observed_step):'')+' · '+when(c.finished_at||c.created_at);
  hasMore=data.has_more;$('prev-page').hidden=page===0;$('next-page').hidden=!hasMore;$('page-label').textContent='第 '+(page+1)+' 页';
  const active=data.stats.active||data.runs.some(r=>['pending','queued','running'].includes(r.status));nextPoll=Date.now()+(active?3000:30000);
  $('history-update').textContent='更新于 '+when(Math.floor(Date.now()/1000))+(page===0?(active?' · 执行中每 3 秒刷新':' · 每 30 秒刷新'):' · 翻页期间暂停自动刷新');
- if(!data.runs.length){box.textContent='没有符合条件的记录。登录后会自动进行连接测试，也可以点击「执行一次并核对效果」。';return;}
+ if(!data.runs.length){box.textContent=state.account.membership.active?'没有符合条件的记录。可以测试连接，或执行一次并核对效果。':'没有符合条件的记录。开通有效使用期后可以测试和执行任务。';return;}
  for(const r of data.runs){
   const check=r.kind==='check',verification=r.kind==='verify',diagnostic=check||verification;
   const names={manual:'手动执行',schedule:'自动执行',check:'只读连接测试',verify:'只读效果核对'};
@@ -41,13 +54,14 @@ async function runs(){
   for(const [label,value] of [['任务编号',r.id],['开始 / 完成',when(r.started_at)+' / '+when(r.finished_at)],['提交前读数',check||verification?'本次不提交':steps(r.before_step)],['核对时云端读数',steps(r.observed_step)],['读数变化',diagnostic?'本次只查询':diff],['核对结果',verifyLabels[r.verification]||'尚未核对'],['最近核对时间',when(r.checked_at)]]){const cell=element('div');cell.append(element('span',label),element('strong',value));grid.append(cell);}
   if(r.parent_id){const cell=element('div');cell.append(element('span','对应执行记录'),element('strong',r.parent_id));grid.append(cell);}
   detail.append(grid,element('p','读回数值仅反映 Zepp 云端记录，不证明第三方 App 已同步，也不能排除其他设备同时写入。','hint'));
-  if(!diagnostic&&['success','unknown'].includes(r.status)){const button=element('button','重新核对（不重新提交）','text-button');button.type='button';button.onclick=()=>action(async()=>{await api('/api/verify',{id:r.id});resetHistory();await runs();notice('已安排只读核对，稍后自动更新原记录的核对结果。');});detail.append(button);}
+  if(!diagnostic&&['success','unknown'].includes(r.status)){const button=element('button','重新核对（不重新提交）','text-button');button.type='button';button.dataset.memberAction='true';button.disabled=busy||!state.account.membership.active;button.onclick=()=>action(async()=>{await api('/api/verify',{id:r.id});resetHistory();await runs();notice('已安排只读核对，稍后自动更新原记录的核对结果。');});detail.append(button);}
   row.append(detail);box.append(row);
  }
 }
 $('toggle-password').onclick=()=>{const p=$('password');p.type=p.type==='password'?'text':'password';$('toggle-password').textContent=p.type==='password'?'显示':'隐藏';};
-$('login-form').onsubmit=e=>{e.preventDefault();action(async()=>{const data={account:$('account').value,password:$('password').value,min_step:18000,max_step:25000,consent:$('consent').checked};$('password').value='';notice('正在验证 Zepp Life，请稍候…');await api('/api/login',data);resetHistory();await load();notice('登录成功，已安排只读连接测试。修改步数请点击「执行一次并核对效果」。');});};
+$('login-form').onsubmit=e=>{e.preventDefault();action(async()=>{const data={account:$('account').value,password:$('password').value,min_step:18000,max_step:25000,consent:$('consent').checked};$('password').value='';notice('正在验证 Zepp Life，请稍候…');await api('/api/login',data);resetHistory();await load();notice(state.account.membership.active?'登录成功，已安排只读连接测试。':'登录成功，请先兑换激活码开通使用期。');});};
 $('settings-form').onsubmit=e=>{e.preventDefault();action(async()=>{await api('/api/settings',{min_step:$('min-step').value,max_step:$('max-step').value,enabled:$('enabled').checked});await load();notice('计划已保存。');});};
+$('redeem-form').onsubmit=e=>{e.preventDefault();action(async()=>{const code=$('activation-code').value;const r=await api('/api/redeem',{code});$('activation-code').value='';await load();notice(r.already_redeemed?'此码此前已兑换，期限没有重复增加。':'激活成功，已增加 '+r.receipt.duration_days+' 天使用期；到期时间：'+when(r.membership.expires_at)+'。');});};
 $('test-connection').onclick=()=>action(async()=>{await api('/api/check',{});resetHistory();await runs();notice('已安排连接测试，不会修改步数。');});
 $('run-now').onclick=()=>action(async()=>{if(String(state.account.min_step)!==$('min-step').value||String(state.account.max_step)!==$('max-step').value)throw new Error('步数范围有未保存的修改，请先保存计划。');await api('/api/run',{});resetHistory();await runs();notice('任务已加入队列，将提交步数并读回核对。请查看下方记录。');});
 $('refresh-runs').onclick=()=>action(runs);
@@ -56,6 +70,6 @@ $('reset-filter').onclick=()=>action(async()=>{resetHistory();await runs();});
 $('prev-page').onclick=()=>action(async()=>{if(page>0)page--;await runs();});
 $('next-page').onclick=()=>action(async()=>{if(hasMore)page++;await runs();});
 $('logout').onclick=()=>action(async()=>{await api('/api/logout',{});await load();notice('已退出登录。已开启的自动计划继续执行。');});
-$('delete-account').onclick=()=>action(async()=>{if(!$('confirm-delete').checked)throw new Error('请先勾选删除确认。');await api('/api/delete',{confirm:'DELETE'});await load();notice('本站账号、凭据和记录已删除。');});
+$('delete-account').onclick=()=>action(async()=>{if(!$('confirm-delete').checked)throw new Error('请先勾选删除确认。');await api('/api/delete',{confirm:'DELETE'});await load();notice('Zepp 凭据、设置和执行记录已删除；使用期与兑换记录保留。');});
 load().catch(e=>notice(e.message,true));
 setInterval(async()=>{if(!state?.signed_in||busy||polling||document.hidden||page!==0||Date.now()<nextPoll)return;polling=true;try{await runs();}catch(e){$('history-update').textContent='刷新失败：'+e.message;nextPoll=Date.now()+30000;}finally{polling=false;}},1000);

@@ -1,5 +1,6 @@
 import {query, beijing} from './jobs.js';
 import {UserError} from './security.js';
+import {membership} from './licensing.js';
 
 export async function history(env, accountId, url) {
   const filter = url.searchParams.get('filter') || 'all';
@@ -21,5 +22,5 @@ export async function history(env, accountId, url) {
     COALESCE(SUM(status IN ('pending','queued','running') OR verification='checking'),0) AS active
     FROM runs WHERE account_id=? AND day=? AND kind IN ('manual','schedule')`, accountId, beijing().slice(0,10)).first();
   const check = await query(env, "SELECT status,message,observed_step,verification,day,created_at,finished_at FROM runs WHERE account_id=? AND kind='check' ORDER BY created_at DESC,id DESC LIMIT 1", accountId).first();
-  return {runs:results.slice(0,30),page,has_more:results.length>30,stats,check};
+  return {runs:results.slice(0,30),page,has_more:results.length>30,stats,check,membership:await membership(env,accountId)};
 }

@@ -1,6 +1,7 @@
 import {seal, open, UserError} from './security.js';
 import {refreshToken, submitSteps} from './steps.js';
 import {readDaySteps, checkConnection, outcome, verificationText} from './verification.js';
+import {requireMembership} from './licensing.js';
 
 export const seconds = () => Math.floor(Date.now() / 1000);
 export const beijing = (ms = Date.now()) => new Date(ms + 8 * 3600000).toISOString();
@@ -17,6 +18,7 @@ export function targetSteps(lo, hi, ms = Date.now()) {
   return Math.floor(target * Math.min(1, Math.max(0.05, (hour - 6) / 16)));
 }
 export async function enqueue(env, account, kind = 'manual', ms = Date.now(), source = null) {
+  await requireMembership(env,account.id);
   const diagnostic = ['check','verify'].includes(kind);
   const day = source?.day || beijing(ms).slice(0, 10), t = seconds();
   const slot = kind === 'schedule' ? `schedule:${beijing(ms).slice(0, 13)}` : `${kind}:${source?.id || ''}:${Math.floor(t / 60)}`;
@@ -47,7 +49,7 @@ export async function scheduled(controller, env) {
     const local = beijing(ms), ratio = Math.min(1, Math.max(0.05, (Number(local.slice(11,13))-6)/16));
     await query(env, `INSERT INTO runs(id,account_id,slot,kind,day,step,created_at,updated_at)
       SELECT lower(hex(randomblob(16))),id,?,'schedule',?,CAST((min_step + abs(random() % (max_step-min_step+1))) * ? AS INTEGER),?,?
-      FROM accounts WHERE enabled=1 AND needs_login=0 ON CONFLICT(account_id,slot) DO NOTHING`,
+      FROM accounts WHERE enabled=1 AND needs_login=0 AND EXISTS(SELECT 1 FROM memberships m WHERE m.account_id=accounts.id AND m.suspended=0 AND m.expires_at>unixepoch()) ON CONFLICT(account_id,slot) DO NOTHING`,
       'schedule:'+local.slice(0,13), local.slice(0,10), ratio, seconds(), seconds()).run();
   }
   // Never repeat an uncertain upstream POST after a worker interruption.
@@ -88,6 +90,8 @@ export async function consume(message, env) {
   }
   try {
     const account = await query(env, 'SELECT * FROM accounts WHERE id=?', run.account_id).first();
+    try { await requireMembership(env,run.account_id); }
+    catch(e) { await finish('skipped',e instanceof UserError?e.message:'暂时无法验证使用期限');message.ack();return; }
     if (account.needs_login || (run.kind === 'schedule' && !account.enabled)) {
       await finish('skipped', account.needs_login ? '凭据已过期，请重新登录' : '自动执行已暂停'); message.ack(); return;
     }
@@ -133,6 +137,9 @@ export async function consume(message, env) {
     const prior = await query(env, "SELECT MAX(step) AS step FROM runs WHERE account_id=? AND day=? AND status IN ('success','unknown')", account.id, run.day).first();
     run.step = Math.max(run.step, prior?.step || 0, before || 0);
     await query(env, 'UPDATE runs SET step=? WHERE id=?', run.step, run.id).run();
+    // Recheck at the last possible moment: jobs may outlive a subscription or ban.
+    try { await requireMembership(env,account.id); }
+    catch(e) { await finish('skipped',e instanceof UserError?e.message:'暂时无法验证使用期限');message.ack();return; }
     try {
       await submitSteps(tokens, run.step, run.day);
       await finish('success', 'Zepp 已确认接收');
