@@ -1,121 +1,51 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {readFileSync} from 'node:fs';
 import worker from '../dist/worker.js';
-import {seal, open, aesCBC, b64, utf8, unb64, fetchJSON} from '../src/security.js';
-import {validate} from '../src/zepp.js';
-import {encryptSecret, saveConfig} from '../src/github.js';
-import nacl from 'tweetnacl';
-import sealedbox from 'tweetnacl-sealedbox-js';
+import {seal,open,fetchJSON} from '../src/security.js';
+import {loginZepp,validate} from '../src/zepp.js';
+const origin='https://mimotion.test';
+const time=()=>Math.floor(Date.now()/1000);
+const day=()=>new Date(Date.now()+28800000).toISOString().slice(0,10);
+function environment(){
+ const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');for(const file of ['0001_multiuser.sql','0002_delivery.sql'])db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
+ const env={APP_ORIGIN:origin,MASTER_SECRET:'test-secret-only',MAX_ACCOUNTS:'200',db,sent:[],queries:0};
+ function statement(sql,args=[]){return {bind(...v){return statement(sql,v);},async first(){env.queries++;return db.prepare(sql).get(...args)||null;},async all(){env.queries++;return {results:db.prepare(sql).all(...args)};},async run(){env.queries++;const r=db.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}};}};}
+ env.DB={prepare:sql=>statement(sql),batch:async statements=>{db.exec('BEGIN');try{const r=await Promise.all(statements.map(s=>s.run()));db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}};
+ env.JOBS={send:async body=>env.sent.push(body),sendBatch:async items=>env.sent.push(...items.map(i=>i.body))};return env;
+}
+function req(path,data,cookie='',csrf='test-csrf',headers={}){return new Request(origin+path,{method:data===undefined?'GET':'POST',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json','X-CSRF-Token':csrf,...headers},...(data===undefined?{}:{body:JSON.stringify(data)})});}
+async function api(env,path,data,a={}){return worker.fetch(req(path,data,a.cookie,a.csrf),env);}
+async function account(env,id,enabled=1){const tokens={user_id:id,login_token:'login-'+id,app_token:'app-'+id,bound_device_id:'ABCDEF123456'};env.db.prepare('INSERT INTO accounts(id,label,credentials,enabled,session_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(id,id+'***',await seal(tokens,env.MASTER_SECRET,'zepp:'+id),enabled,'version',time(),time());const s={id,version:'version',csrf:'test-csrf',exp:time()+600};return {id,csrf:s.csrf,cookie:'__Host-mimotion-user-v2='+await seal(s,env.MASTER_SECRET,'user-session-v2')};}
+function addRun(env,id,owner,kind='manual',status='queued',d=day()){env.db.prepare('INSERT INTO runs(id,account_id,slot,kind,day,step,status,created_at,updated_at) VALUES(?,?,?,?,?,20000,?,?,?)').run(id,owner,id,kind,d,status,time(),time());}
+function msg(id,attempts=1){return {body:{id},attempts,acked:false,retried:false,ack(){this.acked=true;},retry(){this.retried=true;}};}
+function consume(env,m){return worker.queue({messages:[m]},env);}
+function zeppMock(t,options={}){const calls=[];let active=0,maxActive=0;
+ t.mock.method(globalThis,'fetch',async(url,opts={})=>{url=String(url);calls.push({url,opts});
+ if(url.includes('/registrations/tokens'))return new Response(null,{status:303,headers:{Location:'https://example.test/?access=valid-access'}});
+ if(url.includes('/v2/client/login')){assert.equal(new Headers(opts.headers).has('x-hm-ekv'),false);return Response.json({result:'ok',token_info:{login_token:'login-token',app_token:'app-token',user_id:options.userId||'verified-user'}});}
+ if(url.includes('/device/binds.json'))return Response.json({items:[]});
+ if(url.includes('/client/app_tokens')){if(options.expired)return Response.json({result:'fail'},{status:401});return Response.json({result:'ok',token_info:{app_token:'refreshed-'+new URL(url).searchParams.get('login_token')}});}
+ if(url.includes('/band_data.json')){active++;maxActive=Math.max(active,maxActive);await new Promise(r=>setTimeout(r,15));active--;if(options.timeout)throw new Error('private-token-upstream');return Response.json({message:'success'});}
+ throw new Error('Unexpected fetch');});return {calls,get maxActive(){return maxActive;}};}
 
-const origin = 'https://mimotion.test';
-function environment() {
-  const map = new Map();
-  return {APP_ORIGIN: origin, MASTER_SECRET: 'test-only-master-secret', BOOTSTRAP_TOKEN: 'test-only-bootstrap', GITHUB_OWNER_ID: '48154595', GITHUB_OWNER: 'zhuixin8', GITHUB_REPO: 'zhuixin8/mimotion', STORE: {get: async key => map.get(key) || null, put: async (key, value) => map.set(key, value), delete: async key => map.delete(key)}, map};
-}
-async function auth(env, overrides = {}) {
-  const s = {id: 48154595, login: 'zhuixin8', token: 'private-user-token', sid: 'test-session', csrf: 'test-csrf', exp: Math.floor(Date.now() / 1000) + 600, ...overrides};
-  return {s, cookie: '__Host-mimotion-session=' + await seal(s, env.MASTER_SECRET, 'session')};
-}
-function req(path, data, cookie = '', headers = {}) {
-  return new Request(origin + path, {method: data === undefined ? 'GET' : 'POST', headers: {Cookie: cookie, Origin: origin, 'Content-Type': 'application/json', 'X-CSRF-Token': 'test-csrf', ...headers}, ...(data === undefined ? {} : {body: JSON.stringify(data)})});
-}
-test('encrypted envelopes reject tampering and cross-purpose reuse', async () => {
-  const text = await seal({password: 'private'}, 'test-key', 'session');
-  assert.ok(!text.includes('private')); assert.deepEqual(await open(text, 'test-key', 'session'), {password: 'private'});
-  await assert.rejects(open(text, 'test-key', 'draft')); await assert.rejects(open(text, 'different-key', 'session'));
-});
-test('Zepp CBC format is IV + padded ciphertext and decrypts with Web Crypto', async () => {
-  const value = await aesCBC('token-cache', 'abcdefghijklmnop');
-  const key = await crypto.subtle.importKey('raw', utf8('abcdefghijklmnop'), 'AES-CBC', false, ['decrypt']);
-  const result = await crypto.subtle.decrypt({name: 'AES-CBC', iv: value.slice(0, 16)}, key, value.slice(16));
-  assert.equal(new TextDecoder().decode(result), 'token-cache');
-});
-test('GitHub secrets use a sealed box readable only with the receiver key', () => {
-  const pair = nacl.box.keyPair(); const result = encryptSecret('CONFIG-secret', b64(pair.publicKey));
-  assert.equal(new TextDecoder().decode(sealedbox.open(unb64(result), pair.publicKey, pair.secretKey)), 'CONFIG-secret');
-});
-test('validation rejects mixed accounts, invalid steps and unsupported password delimiter', () => {
-  const good = {account: '13800138000', password: 'ok', min_step: 1, max_step: 2};
-  assert.equal(validate(good).account, '+8613800138000');
-  for (const update of [{account: 'a#b'}, {min_step: 3}, {max_step: 1.5}, {password: 'a#b'}, {min_step: ''}]) assert.throws(() => validate({...good, ...update}));
-});
-test('unauthenticated, expired, wrong owner, wrong origin and CSRF requests cannot write', async () => {
-  const env = environment();
-  assert.equal((await worker.fetch(req('/api/config/save', {}), env)).status, 401);
-  for (const overrides of [{id: 123}, {exp: 1}]) { const a = await auth(env, overrides); assert.equal((await worker.fetch(req('/api/config/save', {}, a.cookie), env)).status, 401); }
-  const a = await auth(env);
-  assert.equal((await worker.fetch(req('/api/config/save', {}, a.cookie, {Origin: 'https://evil.test'}), env)).status, 403);
-  assert.equal((await worker.fetch(req('/api/config/save', {}, a.cookie, {'X-CSRF-Token': 'bad'}), env)).status, 403);
-  assert.equal(env.map.size, 0);
-});
-test('setup requires bootstrap capability and does not expose secrets in response', async () => {
-  const env = environment();
-  assert.equal((await worker.fetch(req('/api/setup/start', {token: 'wrong'}), env)).status, 403);
-  const response = await worker.fetch(req('/api/setup/start', {token: env.BOOTSTRAP_TOKEN}), env);
-  const result = await response.json(); const manifest = JSON.parse(result.manifest);
-  assert.equal(manifest.public, false); assert.deepEqual(manifest.default_permissions, {actions: 'write', secrets: 'write', metadata: 'read'});
-  assert.ok(response.headers.get('Set-Cookie').includes('HttpOnly; Secure; SameSite=Lax'));
-  assert.ok(!JSON.stringify(result).includes(env.BOOTSTRAP_TOKEN));
-});
-test('Zepp 401 is actionable and never leaves a valid draft', async () => {
-  const env = environment(), a = await auth(env), previous = globalThis.fetch;
-  globalThis.fetch = async () => new Response('', {status: 303, headers: {Location: 'https://example.test/?error=401'}});
-  try {
-    const response = await worker.fetch(req('/api/zepp/login', {account: 'test@example.com', password: 'password-private', min_step: 1, max_step: 2}, a.cookie), env);
-    assert.equal(response.status, 422); const text = await response.text(); assert.ok(text.includes('401')); assert.ok(!text.includes('password-private')); assert.equal(env.map.get('draft:test-session'), undefined);
-  } finally { globalThis.fetch = previous; }
-});
-test('successful login obtains all credentials and stores only encrypted expiring draft', async () => {
-  const env = environment(), a = await auth(env), previous = globalThis.fetch; const urls = [];
-  globalThis.fetch = async (url, options) => { urls.push(String(url));
-    if (String(url).includes('/registrations/')) {
-      assert.equal(new Headers(options.headers).get('x-hm-ekv'), '1');
-      return new Response('', {status: 303, headers: {Location: 'https://example.test/?access=access-private&next=1'}});
-    }
-    if (String(url).includes('/client/login')) {
-      // Reproduce Zepp's actual behavior: this header changes the response to binary.
-      if (new Headers(options.headers).has('x-hm-ekv')) return new Response(new Uint8Array([248, 0, 241]), {status: 400, headers: {'Content-Type': 'application/octet-stream'}});
-      assert.ok(options.body instanceof URLSearchParams);
-      return Response.json({result: 'ok', token_info: {login_token: 'login-private', app_token: 'app-private', user_id: '123'}});
-    }
-    return Response.json({items: [{deviceType: 0, deviceId: 'AA:BB'}]});
-  };
-  try {
-    const response = await worker.fetch(req('/api/zepp/login', {account: 'test@example.com', password: 'password-private', min_step: 1, max_step: 2}, a.cookie), env);
-    assert.equal(response.status, 200); const text = await response.text(); assert.ok(!text.includes('private')); assert.ok(!text.includes('test@example.com'));
-    const stored = env.map.get('draft:test-session'); assert.ok(stored && !stored.includes('password-private'));
-    const draft = await open(stored, env.MASTER_SECRET, 'draft:test-session');
-    assert.equal(draft.config.PWD, 'password-private'); assert.equal(draft.tokens['test@example.com'].bound_device_id, 'AABB'); assert.ok(draft.exp > Date.now() / 1000);
-    assert.ok(urls.every(url => !url.includes('band_data')));
-  } finally { globalThis.fetch = previous; }
-});
-test('non-JSON errors identify the endpoint and status without exposing response secrets', async () => {
-  const previous = globalThis.fetch;
-  globalThis.fetch = async () => new Response('private-upstream-token', {status: 400, headers: {'Content-Type': 'application/octet-stream'}});
-  try {
-    await assert.rejects(fetchJSON('https://example.test/', {}, 'Zepp 客户端授权接口'), error => {
-      assert.match(error.message, /Zepp 客户端授权接口/);
-      assert.match(error.message, /HTTP 400/);
-      assert.match(error.message, /二进制/);
-      assert.ok(!error.message.includes('private-upstream-token'));
-      return true;
-    });
-  } finally { globalThis.fetch = previous; }
-});
-test('save encrypts each secret and reports partial failure without dispatching', async () => {
-  const env = environment(), pair = nacl.box.keyPair(), previous = globalThis.fetch; const writes = [];
-  const prepared = {config: {USER: 'user', PWD: 'secret'}, aes_key: 'abcdefghijklmnop', tokens: {user: {app_token: 'app-private'}}};
-  globalThis.fetch = async (url, opts) => {
-    if (String(url).endsWith('/public-key')) return Response.json({key: b64(pair.publicKey), key_id: 'key1'});
-    if (String(url).endsWith('/run.yml')) return Response.json({state: 'active'});
-    if (opts.method === 'PUT') { writes.push({url: String(url), body: JSON.parse(opts.body)}); return new Response(null, {status: writes.length === 2 ? 403 : 204}); }
-    if (opts.method === 'POST') throw new Error('must not dispatch');
-    return Response.json({default_branch: 'master'});
-  };
-  try {
-    await assert.rejects(saveConfig(env, 'github-private', prepared), /已确认保存：AES_KEY/);
-    assert.equal(writes.length, 2); assert.equal(writes[0].body.key_id, 'key1');
-    assert.equal(new TextDecoder().decode(sealedbox.open(unb64(writes[0].body.encrypted_value), pair.publicKey, pair.secretKey)), prepared.aes_key);
-    assert.ok(!JSON.stringify(writes).includes('app-private'));
-  } finally { globalThis.fetch = previous; }
-});
+test('public page, legacy sessions, origin and CSRF protection',async()=>{const env=environment();assert.match(await (await api(env,'/')).text(),/首次验证成功/);assert.equal((await api(env,'/api/run',{})).status,401);const a=await account(env,'A');assert.equal((await worker.fetch(req('/api/settings',{},a.cookie,'bad'),env)).status,403);assert.equal((await worker.fetch(req('/api/login',{},'', '',{Origin:'https://evil.test'}),env)).status,403);assert.equal((await api(env,'/api/config/save',{},a)).status,404);assert.equal((await api(env,'/api/run',{}, {cookie:'__Host-mimotion-session=old'})).status,401);});
+
+test('Zepp direct login creates isolated encrypted account without password; re-login revokes old cookie',async(t)=>{const env=environment();zeppMock(t);const input={account:'test@example.com',password:'secret#password',min_step:18000,max_step:25000,consent:true};const r=await api(env,'/api/login',input);assert.equal(r.status,200);const c=r.headers.get('set-cookie').split(';')[0];assert.match(r.headers.get('set-cookie'),/HttpOnly; Secure; SameSite=Strict/);const status=await (await api(env,'/api/status',undefined,{cookie:c})).json();assert.equal(status.signed_in,true);assert.equal(status.account.enabled,false);const row=env.db.prepare('SELECT * FROM accounts').get();const stored=JSON.stringify(row);assert.ok(!stored.includes(input.password));assert.ok(!stored.includes('login-token'));assert.ok(!stored.includes(input.account));assert.equal((await open(row.credentials,env.MASTER_SECRET,'zepp:'+row.id)).user_id,'verified-user');await assert.rejects(open(row.credentials,env.MASTER_SECRET,'zepp:someone-else'));await api(env,'/api/login',input);assert.equal((await (await api(env,'/api/status',undefined,{cookie:c})).json()).signed_in,false);assert.equal(env.db.prepare('SELECT COUNT(*) AS n FROM accounts').get().n,1);});
+
+test('two users can run concurrently with their own tokens and cannot read/change/delete each other',async(t)=>{const env=environment(), a=await account(env,'A'),b=await account(env,'B');const mock=zeppMock(t);addRun(env,'run-a','A');addRun(env,'run-b','B');await Promise.all([consume(env,msg('run-a')),consume(env,msg('run-b'))]);assert.equal(mock.maxActive,2);const submits=mock.calls.filter(c=>c.url.includes('/band_data.json'));assert.equal(submits.length,2);for(const call of submits){const p=call.opts.body;const uid=p.get('userid');assert.equal(call.opts.headers.apptoken,'refreshed-login-'+uid);assert.equal(p.get('last_deviceid'),'ABCDEF123456');const payload=JSON.parse(p.get('data_json'))[0];assert.equal(payload.date,day());assert.equal(JSON.parse(payload.summary).stp.ttl,20000);}
+ const ar=await (await api(env,'/api/runs?account_id=B',undefined,a)).json();assert.deepEqual(ar.runs.map(r=>r.id),['run-a']);assert.equal((await api(env,'/api/settings',{account_id:'B',min_step:1,max_step:2,enabled:false},a)).status,200);assert.equal(env.db.prepare("SELECT enabled FROM accounts WHERE id='B'").get().enabled,1);assert.equal((await api(env,'/api/delete',{confirm:'DELETE',account_id:'B'},a)).status,200);assert.equal(env.db.prepare('SELECT COUNT(*) AS n FROM runs').get().n,1);assert.equal((await api(env,'/api/runs',undefined,a)).status,401);assert.equal((await api(env,'/api/runs',undefined,b)).status,200);});
+
+test('same account and duplicate deliveries never submit concurrently or repeat success',async(t)=>{const env=environment();await account(env,'A');addRun(env,'one','A');addRun(env,'two','A');const mock=zeppMock(t), m=msg('two');await Promise.all([consume(env,msg('one')),consume(env,msg('one')),consume(env,m)]);assert.equal(mock.maxActive,1);assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')).length,1);assert.equal(m.retried,true);await consume(env,msg('one'));assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')).length,1);await consume(env,msg('two',2));assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')).length,2);});
+
+test('uncertain POST is visible and never automatically resubmitted',async(t)=>{const env=environment();await account(env,'A');addRun(env,'r','A');const mock=zeppMock(t,{timeout:true});await consume(env,msg('r'));await consume(env,msg('r',2));const row=env.db.prepare('SELECT * FROM runs').get();assert.equal(row.status,'unknown');assert.ok(!row.message.includes('private-token'));assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')).length,1);assert.equal(env.db.prepare('SELECT lease_until FROM accounts').get().lease_until,0);});
+
+test('expired credentials pause the user; paused and previous-day jobs do not submit',async(t)=>{const env=environment();await account(env,'A');addRun(env,'r','A');const mock=zeppMock(t,{expired:true});await consume(env,msg('r'));assert.equal(env.db.prepare('SELECT enabled FROM accounts').get().enabled,0);assert.equal(env.db.prepare('SELECT needs_login FROM accounts').get().needs_login,1);addRun(env,'s','A','schedule');addRun(env,'old','A','manual','queued','2001-01-01');await consume(env,msg('s'));await consume(env,msg('old'));assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')).length,0);assert.deepEqual(env.db.prepare('SELECT status FROM runs ORDER BY id').all().map(r=>r.status),['skipped','failed','skipped']);});
+
+test('scheduler batches 200 accounts within query budget, retries outbox, and deduplicates slots',async()=>{const env=environment();for(let i=0;i<200;i++)await account(env,'u'+i);env.queries=0;const tick={scheduledTime:Date.parse(day()+'T00:35:00Z')};await worker.scheduled(tick,env);assert.equal(env.db.prepare('SELECT COUNT(*) AS n FROM runs').get().n,200);assert.equal(env.sent.length,200);assert.ok(env.queries<30);env.sent=[];await worker.scheduled(tick,env);assert.equal(env.sent.length,0);assert.equal(env.db.prepare('SELECT COUNT(*) AS n FROM runs').get().n,200);
+ env.db.prepare("UPDATE runs SET status='pending'").run();env.JOBS.sendBatch=async()=>{throw new Error('queue unavailable');};await worker.scheduled({scheduledTime:tick.scheduledTime+300000},env);assert.equal(env.db.prepare("SELECT COUNT(*) AS n FROM runs WHERE status='pending'").get().n,200);env.JOBS.sendBatch=async items=>env.sent.push(...items);await worker.scheduled({scheduledTime:tick.scheduledTime+600000},env);assert.equal(env.sent.length,200);});
+
+test('login and manual run rate limits do not create extra jobs',async(t)=>{const env=environment();const a=await account(env,'A');assert.equal((await api(env,'/api/run',{},a)).status,202);assert.equal((await api(env,'/api/run',{},a)).status,429);assert.equal(env.db.prepare('SELECT COUNT(*) AS n FROM runs').get().n,1);zeppMock(t);const data={account:'a@example.com',password:'p',min_step:1,max_step:2,consent:true};for(let i=0;i<5;i++)assert.equal((await api(env,'/api/login',data)).status,200);assert.equal((await api(env,'/api/login',data)).status,429);});
+
+test('non-JSON failures never expose upstream bodies; invalid inputs rejected',async(t)=>{t.mock.method(globalThis,'fetch',async()=>new Response('secret-upstream-token',{status:502,headers:{'content-type':'application/octet-stream'}}));await assert.rejects(fetchJSON('https://example.test'),e=>e.message.includes('二进制')&&!e.message.includes('secret-upstream'));assert.equal(validate({account:'13800138000',password:'a#b',min_step:1,max_step:2}).account,'+8613800138000');assert.throws(()=>validate({account:'a@example.com',password:'p',min_step:4,max_step:2}));});

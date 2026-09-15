@@ -1,143 +1,109 @@
 import html from './index.html';
 import css from './style.css';
 import client from './client.js.txt';
-import {random, equal, seal, open, UserError, fetchJSON, readText} from './security.js';
-import {github, saveConfig} from './github.js';
-import {loginZepp} from './zepp.js';
+import {random, equal, seal, open, UserError, readText, utf8, b64} from './security.js';
+import {loginZepp, validate} from './zepp.js';
+import {query, limit, seconds, enqueue, scheduled, consume} from './jobs.js';
 
-const now = () => Math.floor(Date.now() / 1000);
-const json = (data, status = 200) => new Response(JSON.stringify(data), {status, headers: {'Content-Type': 'application/json; charset=utf-8'}});
-const cookieName = kind => '__Host-mimotion-' + kind;
-function cookie(request, kind) { return request.headers.get('Cookie')?.split(';').map(v => v.trim()).find(v => v.startsWith(cookieName(kind) + '='))?.slice(cookieName(kind).length + 1); }
-function setCookie(response, kind, value, age) { response.headers.append('Set-Cookie', `${cookieName(kind)}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${age}`); }
-function redirect(url) { return new Response(null, {status: 303, headers: {Location: url}}); }
-async function appConfig(env) { const value = await env.STORE.get('app-config'); return value ? open(value, env.MASTER_SECRET, 'app-config') : null; }
+const COOKIE = '__Host-mimotion-user-v2';
+const json = (data, status=200) => new Response(JSON.stringify(data), {status,headers:{'content-type':'application/json; charset=utf-8'}});
+const setCookie = (res, value, age=86400) => res.headers.append('Set-Cookie', `${COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${age}`);
+export async function identity(env, text) {
+  const key = await crypto.subtle.importKey('raw', utf8(env.MASTER_SECRET), {name:'HMAC',hash:'SHA-256'}, false, ['sign']);
+  return b64(await crypto.subtle.sign('HMAC', key, utf8(text)));
+}
 async function session(request, env) {
   try {
-    const result = await open(cookie(request, 'session') || '', env.MASTER_SECRET, 'session');
-    if (result.exp < now() || String(result.id) !== env.GITHUB_OWNER_ID) throw new Error();
-    return result;
-  } catch { throw new UserError('请先使用 GitHub 登录。', 401); }
+    const value = request.headers.get('cookie')?.split(';').map(x=>x.trim()).find(x=>x.startsWith(COOKIE+'='))?.slice(COOKIE.length+1);
+    const s = await open(value || '', env.MASTER_SECRET, 'user-session-v2');
+    if (s.exp <= seconds() || !s.id || !s.csrf) return null;
+    const account = await query(env, 'SELECT id,label,min_step,max_step,enabled,needs_login,session_version FROM accounts WHERE id=?', s.id).first();
+    return account && account.session_version === s.version ? {...s, account} : null;
+  } catch { return null; }
 }
-async function body(request) {
-  if (!(request.headers.get('Content-Type') || '').startsWith('application/json')) throw new UserError('请求格式无效。', 415);
-  try { const parsed = JSON.parse(await readText(request, 16384)); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(); return parsed; }
-  catch (e) { if (e instanceof UserError) throw e; throw new UserError('请求格式无效。'); }
-}
-async function protectedPost(request, env) {
-  const s = await session(request, env);
-  if (!await equal(s.csrf, request.headers.get('X-CSRF-Token'))) throw new UserError('页面验证已失效，请刷新后重试。', 403);
-  return s;
-}
-async function getDraft(env, s) {
-  const value = await env.STORE.get('draft:' + s.sid);
-  if (!value) throw new UserError('登录配置已过期，请重新验证 Zepp 账号。', 409);
-  const draft = await open(value, env.MASTER_SECRET, 'draft:' + s.sid);
-  if (draft.exp < now()) throw new UserError('登录配置已过期，请重新验证 Zepp 账号。', 409);
-  return draft;
-}
+const publicAccount = a => ({label:a.label,min_step:a.min_step,max_step:a.max_step,enabled:!!a.enabled,needs_login:!!a.needs_login});
 async function route(request, env) {
   const url = new URL(request.url), path = url.pathname;
-  if (url.origin !== env.APP_ORIGIN) throw new UserError('请使用正式页面地址访问。', 403);
-  if (!['GET', 'POST'].includes(request.method)) throw new UserError('不支持此请求。', 405);
-  if (request.method === 'POST' && request.headers.get('Origin') !== env.APP_ORIGIN) throw new UserError('请求来源无效。', 403);
-  if (request.method === 'GET' && ['/', '/setup'].includes(path)) return new Response(html, {headers: {'Content-Type': 'text/html; charset=utf-8'}});
-  if (request.method === 'GET' && path === '/style.css') return new Response(css, {headers: {'Content-Type': 'text/css; charset=utf-8'}});
-  if (request.method === 'GET' && path === '/app.js') return new Response(client, {headers: {'Content-Type': 'text/javascript; charset=utf-8'}});
-  if (request.method === 'GET' && path === '/favicon.svg') return new Response('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#143eee"/><path d="M12 39l11-17 10 22 11-25 8 17" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/></svg>', {headers: {'Content-Type': 'image/svg+xml'}});
-  if (!env.MASTER_SECRET) throw new UserError('网页尚未完成初始化。', 503);
-  if (request.method === 'GET' && path === '/api/status') {
-    const config = await appConfig(env);
-    let s = null; try { s = await session(request, env); } catch {}
-    let draft = null; if (s) { try { draft = await getDraft(env, s); } catch {} }
-    return json({configured: !!config, signed_in: !!s, login: s?.login, csrf: s?.csrf, summary: draft?.summary,
-      install_url: config ? `https://github.com/apps/${config.slug}/installations/new` : null, repository: env.GITHUB_REPO});
+  if (url.origin !== env.APP_ORIGIN) throw new UserError('访问地址不正确。', 403);
+  if (!['GET','POST'].includes(request.method)) throw new UserError('不支持的请求。', 405);
+  if (request.method === 'GET') {
+    const assets = {'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript']};
+    if (assets[path]) return new Response(assets[path][0], {headers:{'content-type':assets[path][1]+'; charset=utf-8'}});
+    if (path === '/favicon.ico') return new Response(null,{status:204});
   }
-  if (request.method === 'POST' && path === '/api/setup/start') {
-    if (await appConfig(env)) throw new UserError('GitHub 应用已经创建，请直接登录。', 409);
-    const data = await body(request);
-    if (!env.BOOTSTRAP_TOKEN || !await equal(data.token, env.BOOTSTRAP_TOKEN)) throw new UserError('初始化链接无效。请使用专属初始化链接。', 403);
-    const state = random();
-    const manifest = {name: 'mimotion-zhuixin8-' + crypto.randomUUID().slice(0, 8), url: env.APP_ORIGIN,
-      hook_attributes: {url: env.APP_ORIGIN + '/webhook', active: false},
-      redirect_url: env.APP_ORIGIN + '/setup/callback', callback_urls: [env.APP_ORIGIN + '/auth/callback'],
-      setup_url: env.APP_ORIGIN + '/auth/start', public: false, request_oauth_on_install: false,
-      description: '个人 Zepp Life 配置面板，仅管理 mimotion 的配置和工作流。', default_permissions: {actions: 'write', secrets: 'write', metadata: 'read'}, default_events: []};
-    const response = json({action: 'https://github.com/settings/apps/new?state=' + state, manifest: JSON.stringify(manifest)});
-    setCookie(response, 'setup', await seal({state, exp: now() + 1800}, env.MASTER_SECRET, 'setup'), 1800);
-    return response;
+  let data;
+  if (request.method === 'POST') {
+    if (request.headers.get('Origin') !== env.APP_ORIGIN) throw new UserError('请求来源无效，请刷新页面。', 403);
+    if (!request.headers.get('content-type')?.startsWith('application/json')) throw new UserError('请求格式无效。', 415);
+    try { data = JSON.parse(await readText(request, 4096)); } catch { throw new UserError('请求内容无效或过大。', 400); }
+    if (!data || Array.isArray(data) || typeof data !== 'object') throw new UserError('请求内容无效。');
   }
-  if (request.method === 'GET' && path === '/setup/callback') {
-    if (await appConfig(env)) return redirect('/auth/start');
-    let state; try { state = await open(cookie(request, 'setup') || '', env.MASTER_SECRET, 'setup'); } catch { throw new UserError('初始化会话已过期，请重新打开初始化链接。', 403); }
-    if (state.exp < now() || !await equal(state.state, url.searchParams.get('state'))) throw new UserError('初始化验证失败。', 403);
-    const code = url.searchParams.get('code'); if (!code || !/^[a-zA-Z0-9_-]+$/.test(code)) throw new UserError('GitHub 未返回注册结果。');
-    const app = await github('/app-manifests/' + encodeURIComponent(code) + '/conversions', null, 'POST');
-    if (String(app.owner?.id) !== env.GITHUB_OWNER_ID) throw new UserError('请在 zhuixin8 账号下创建应用。', 403);
-    if (!app.client_id || !app.client_secret || !app.slug) throw new UserError('GitHub 返回的应用信息不完整。', 502);
-    // The app private key is unnecessary for user-authorized requests and is deliberately not retained.
-    await env.STORE.put('app-config', await seal({client_id: app.client_id, client_secret: app.client_secret, slug: app.slug, id: app.id}, env.MASTER_SECRET, 'app-config'));
-    const response = redirect(`https://github.com/apps/${app.slug}/installations/new`); setCookie(response, 'setup', '', 0); return response;
+  if (path === '/api/login' && request.method === 'POST') {
+    if (data.consent !== true) throw new UserError('请先同意保存加密登录凭据。');
+    const v = validate(data);
+    const ip = request.headers.get('CF-Connecting-IP') || 'local';
+    await limit(env, 'login-global', 120, 3600);
+    await limit(env, 'login-ip:' + await identity(env, ip), 8, 600);
+    await limit(env, 'login-account:' + await identity(env, v.account.toLowerCase()), 5, 600);
+    const verified = await loginZepp(data);
+    const tokens = Object.values(verified.tokens)[0];
+    const id = await identity(env, 'zepp-user:' + String(tokens.user_id));
+    const version = random(), t = seconds();
+    const result = await query(env, `INSERT INTO accounts(id,label,credentials,min_step,max_step,session_version,created_at,updated_at)
+      SELECT ?,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM accounts) < ? OR EXISTS(SELECT 1 FROM accounts WHERE id=?)
+      ON CONFLICT(id) DO UPDATE SET credentials=excluded.credentials,label=excluded.label,
+      session_version=excluded.session_version,needs_login=0,updated_at=excluded.updated_at
+      WHERE accounts.lease_until < ?`, id, verified.summary.account, await seal(tokens, env.MASTER_SECRET, 'zepp:' + id), v.lo, v.hi, version, t, t, Number(env.MAX_ACCOUNTS || 200), id, t).run();
+    if (!result.meta.changes) throw new UserError('账号正在执行任务，或站点注册名额已满，请稍后再试。', 409);
+    const s = {id,version,csrf:random(),exp:t+86400};
+    const res = json({ok:true}); setCookie(res, await seal(s, env.MASTER_SECRET, 'user-session-v2')); return res;
   }
-  if (request.method === 'GET' && path === '/auth/start') {
-    const app = await appConfig(env); if (!app) throw new UserError('请先创建专属 GitHub 应用。', 409);
-    const state = random();
-    const response = redirect('https://github.com/login/oauth/authorize?' + new URLSearchParams({client_id: app.client_id, redirect_uri: env.APP_ORIGIN + '/auth/callback', state, login: env.GITHUB_OWNER}));
-    setCookie(response, 'oauth', await seal({state, exp: now() + 600}, env.MASTER_SECRET, 'oauth'), 600); return response;
+  const s = await session(request, env);
+  if (path === '/api/status' && request.method === 'GET') return json({signed_in:!!s,csrf:s?.csrf,account:s ? publicAccount(s.account) : null});
+  if (!s) throw new UserError('请先登录自己的 Zepp Life 账号。', 401);
+  if (request.method === 'POST' && !await equal(request.headers.get('X-CSRF-Token'), s.csrf)) throw new UserError('页面已过期，请刷新后重试。', 403);
+  if (path === '/api/runs' && request.method === 'GET') {
+    const {results} = await query(env, 'SELECT id,kind,day,step,status,message,created_at FROM runs WHERE account_id=? ORDER BY created_at DESC,id DESC LIMIT 30', s.id).all();
+    return json({runs:results});
   }
-  if (request.method === 'GET' && path === '/auth/callback') {
-    let oauth; try { oauth = await open(cookie(request, 'oauth') || '', env.MASTER_SECRET, 'oauth'); } catch { throw new UserError('登录会话已过期，请返回首页重新登录。', 403); }
-    if (oauth.exp < now() || !await equal(oauth.state, url.searchParams.get('state'))) throw new UserError('GitHub 登录验证失败，请重试。', 403);
-    const code = url.searchParams.get('code'); if (!code) throw new UserError('你尚未完成 GitHub 授权，请返回首页重试。');
-    const app = await appConfig(env);
-    const {response: remote, data} = await fetchJSON('https://github.com/login/oauth/access_token', {method: 'POST', headers: {Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': 'mimotion-dashboard'}, body: JSON.stringify({client_id: app.client_id, client_secret: app.client_secret, code, redirect_uri: env.APP_ORIGIN + '/auth/callback'})});
-    if (!remote.ok || !data.access_token) throw new UserError('GitHub 授权没有完成，请重试。', 401);
-    const user = await github('/user', data.access_token);
-    if (String(user.id) !== env.GITHUB_OWNER_ID) throw new UserError('此页面仅允许 zhuixin8 使用。', 403);
-    const s = {id: user.id, login: user.login, token: data.access_token, sid: random(), csrf: random(), exp: now() + 3600};
-    const response = redirect('/'); setCookie(response, 'session', await seal(s, env.MASTER_SECRET, 'session'), 3600); setCookie(response, 'oauth', '', 0); return response;
+  if (request.method === 'POST') {
+    await limit(env, 'write:' + s.id, 20, 60);
+    if (path === '/api/settings') {
+      const v = validate({account:'validation@example.com',password:'unused',min_step:data.min_step,max_step:data.max_step});
+      if (typeof data.enabled !== 'boolean') throw new UserError('请选择是否自动执行。');
+      if (data.enabled && s.account.needs_login) throw new UserError('凭据已失效，请退出后重新登录。', 401);
+      await query(env, 'UPDATE accounts SET min_step=?,max_step=?,enabled=?,updated_at=? WHERE id=?', v.lo,v.hi,Number(data.enabled),seconds(),s.id).run();
+      return json({ok:true});
+    }
+    if (path === '/api/run') {
+      if (s.account.needs_login) throw new UserError('凭据已失效，请退出后重新登录。', 401);
+      await limit(env, 'run-minute:' + s.id, 1, 60);
+      await limit(env, 'run-day:' + s.id, 6, 86400);
+      return json({ok:true,id:await enqueue(env,s.account)},202);
+    }
+    if (path === '/api/delete') {
+      if (data.confirm !== 'DELETE') throw new UserError('请确认删除当前账号。');
+      const result = await query(env, 'DELETE FROM accounts WHERE id=? AND lease_until<?', s.id,seconds()).run();
+      if (!result.meta.changes) throw new UserError('任务正在执行，请等待结束后再删除。',409);
+      const res=json({ok:true});setCookie(res,'',0);return res;
+    }
+    if (path === '/api/logout') {
+      await query(env, 'UPDATE accounts SET session_version=? WHERE id=? AND session_version=?', random(),s.id,s.version).run();
+      const res=json({ok:true});setCookie(res,'',0);return res;
+    }
   }
-  if (request.method === 'POST' && path === '/api/logout') {
-    const s = await protectedPost(request, env); await env.STORE.delete('draft:' + s.sid);
-    const response = json({ok: true}); setCookie(response, 'session', '', 0); return response;
-  }
-  if (request.method === 'POST' && path === '/api/zepp/login') {
-    const s = await protectedPost(request, env); const data = await body(request);
-    const last = Number(await env.STORE.get('login-at:' + s.sid)); if (last && now() - last < 15) throw new UserError('请等待 15 秒再尝试登录。', 429);
-    await env.STORE.put('login-at:' + s.sid, String(now()), {expirationTtl: 60});
-    await env.STORE.delete('draft:' + s.sid);
-    const prepared = await loginZepp(data); prepared.exp = now() + 600;
-    await env.STORE.put('draft:' + s.sid, await seal(prepared, env.MASTER_SECRET, 'draft:' + s.sid), {expirationTtl: 600});
-    return json({ok: true, summary: prepared.summary});
-  }
-  if (request.method === 'POST' && path === '/api/config/save') {
-    const s = await protectedPost(request, env); const data = await body(request);
-    if (data.replace_config !== true) throw new UserError('请确认以本次单账号设置替换仓库配置。');
-    const prepared = await getDraft(env, s); const result = await saveConfig(env, s.token, prepared);
-    await env.STORE.delete('draft:' + s.sid); return json(result);
-  }
-  if (request.method === 'GET' && path === '/api/runs') {
-    const s = await session(request, env);
-    const data = await github('/repos/' + env.GITHUB_REPO + '/actions/workflows/run.yml/runs?per_page=5', s.token);
-    return json({runs: (data.workflow_runs || []).map(r => ({id: r.id, status: r.status, conclusion: r.conclusion, created_at: r.created_at, url: r.html_url}))});
-  }
-  throw new UserError('页面不存在。', 404);
+  throw new UserError('接口不存在。',404);
 }
 export default {
   async fetch(request, env) {
-    let response;
-    try { response = await route(request, env); }
-    catch (e) {
-      const message = e instanceof UserError ? e.message : '连接远端服务失败，请稍后重试。';
-      response = json({ok: false, message}, e instanceof UserError ? e.status : 502);
-      // Never log request bodies, URLs, upstream error objects, or authentication material.
-    }
-    response.headers.set('Cache-Control', 'no-store');
-    response.headers.set('Referrer-Policy', 'no-referrer');
-    response.headers.set('X-Content-Type-Options', 'nosniff');
-    response.headers.set('X-Frame-Options', 'DENY');
-    response.headers.set('Strict-Transport-Security', 'max-age=31536000');
-    response.headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://github.com");
-    return response;
-  }
+    let res;
+    try { res=await route(request,env); }
+    catch(e) {res=json({error:e instanceof UserError ? e.message : '服务暂时不可用，请稍后重试。'}, e instanceof UserError ? e.status : 503);}
+    const headers = {'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Strict-Transport-Security':'max-age=31536000; includeSubDomains',
+      'Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"};
+    for(const [k,v] of Object.entries(headers)) res.headers.set(k,v);
+    return res;
+  },
+  scheduled,
+  async queue(batch, env) {for(const message of batch.messages) await consume(message,env);}
 };

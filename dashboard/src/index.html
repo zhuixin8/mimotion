@@ -1,36 +1,20 @@
 <!doctype html>
-<html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>MiMotion · 账号配置</title><link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
-<body>
-<header><a class="brand" href="/" aria-label="MiMotion 首页"><span class="mark">m<span>↗</span></span> MiMotion</a><span class="private"><i></i> 个人控制台</span><button class="text-button" id="logout" hidden>退出登录</button></header>
-<main>
-  <div class="intro"><div><p class="eyebrow">ACCOUNT & AUTOMATION</p><h1>连接账号，<br>把配置交给网页。</h1><p class="lede">验证 Zepp Life，连接你的 GitHub 仓库。<br>一次配置，按时执行。</p></div><div class="intro-note"><span class="note-icon">↗</span><span>你的仓库<br><strong id="repository">zhuixin8/mimotion</strong></span></div></div>
-  <ol class="steps" aria-label="配置步骤"><li id="step1" class="current"><b>01</b> 授权 GitHub</li><li id="step2"><b>02</b> 验证 Zepp Life</li><li id="step3"><b>03</b> 保存并运行</li></ol>
-  <div id="global-status" class="notice" role="status" aria-live="polite">正在检查连接状态…</div>
-  <section id="setup-panel" class="card" hidden><p class="eyebrow">首次设置</p><h2>创建你的专属 GitHub 应用</h2><p>应用属于你，只用于更新配置和管理工作流。安装时选择 <strong>Only select repositories → mimotion</strong>。</p><p class="muted">权限：Secrets 读写、Actions 读写、仓库基本信息读取。</p><button id="create-app" class="primary">前往 GitHub 创建应用 <span>↗</span></button><p id="setup-help" class="muted"></p></section>
-  <section id="signin-panel" class="card signin" hidden><div><p class="eyebrow">01 / CONNECT</p><h2>先连接你的 GitHub</h2><p>此控制台仅供 <strong>zhuixin8</strong> 使用。<br>授权后可以直接保存配置，无需复制令牌。</p><a class="primary" href="/auth/start">使用 GitHub 登录 <span>→</span></a></div><div class="connection-graphic" aria-hidden="true"><div class="orb">m↗</div><div class="connector"></div><div class="repo-icon">&lt;/&gt;</div><small>MiMotion → GitHub</small></div></section>
-  <div id="workspace" class="workspace" hidden>
-    <div class="main-column">
-      <section class="card"><div class="card-heading"><div><p class="eyebrow">02 / ACCOUNT</p><h2>验证 Zepp Life 账号</h2></div><span class="tag">密码登录</span></div>
-        <p class="muted">使用 Zepp Life 的邮箱或手机号及密码。验证成功后会自动生成所需配置。</p>
-        <form id="zepp-form"><fieldset id="zepp-fields"><label for="account">邮箱 / 手机号</label><input id="account" name="account" type="text" autocomplete="username" placeholder="例如 name@example.com" required maxlength="254">
-          <label for="password">Zepp Life 密码</label><div class="password-wrap"><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="输入账号密码"><button type="button" id="show-password" aria-label="显示密码">显示</button></div>
-          <div class="range"><div><label for="min-step">每日最小步数</label><input id="min-step" name="min_step" type="number" min="0" max="100000" step="1" value="18000" required></div><span>—</span><div><label for="max-step">每日最大步数</label><input id="max-step" name="max_step" type="number" min="0" max="100000" step="1" value="25000" required></div></div>
-          <p class="hint">日内步数范围随时间增加，22 点达到这里设置的范围。</p>
-          <button class="primary full" id="verify" type="submit">验证账号并生成配置 <span>→</span></button></fieldset></form>
-        <div id="login-status" class="notice" role="status" aria-live="polite" hidden></div>
-      </section>
-      <section id="save-panel" class="card" hidden><p class="eyebrow">03 / SAVE</p><h2>配置已准备好</h2><div class="verified"><span class="check">✓</span><div><strong id="verified-account"></strong><p id="verified-steps"></p></div></div><p id="device-note" class="muted"></p>
-        <div class="config-list"><span>账号配置 <b>已生成</b></span><span>登录凭据 <b>已获取</b></span><span>加密密钥 <b>已生成</b></span></div>
-        <label class="consent"><input type="checkbox" id="replace-config"><span>将仓库 CONFIG 替换为本次单账号和步数设置；原多账号及通知配置会被替换。</span></label>
-        <button id="save" class="primary full">保存到 GitHub 并运行 <span>↗</span></button><p class="hint">保存后自动写入 Secrets。账号验证本身不会提交步数。</p><div id="save-status" class="notice" role="status" aria-live="polite" hidden></div>
-      </section>
-    </div>
-    <aside><section class="card connected"><div class="connected-title"><i></i><strong>GitHub 已连接</strong></div><p id="github-user">zhuixin8</p><a id="repo-link" href="https://github.com/zhuixin8/mimotion" target="_blank" rel="noreferrer">打开仓库 ↗</a><a id="install-link" class="secondary" hidden target="_blank" rel="noreferrer">检查仓库授权 ↗</a></section>
-      <section class="card schedule"><p class="eyebrow">SCHEDULE</p><h3>每日执行时间</h3><span class="timezone">北京时间 · UTC+8</span><div class="times"><span>08:35</span><span>10:35</span><span>12:35</span><span>14:35</span><span>16:35</span><span>22:35</span></div><p class="hint">由 GitHub Actions 执行，排队时可能延迟。电脑关机后仍可运行。</p></section>
-      <section class="card runs"><div class="card-heading"><h3>最近运行</h3><button id="refresh" class="text-button">刷新</button></div><div id="runs-list" aria-live="polite">暂未读取</div><p class="hint">绿色表示脚本报告成功；第三方平台是否同步需另行确认。</p></section>
-    </aside>
-  </div>
-  <footer><span>MiMotion / Personal workspace</span><span>登录草稿加密保存 10 分钟 · 密码不写入页面存储</span></footer>
-</main>
-</body></html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MiMotion · 我的步数计划</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><header><a class="brand" href="/">MiMotion<span class="brand-dot">.</span></a><span class="private"><span class="status-dot"></span>独立账号 · 云端执行</span></header>
+<main><section class="intro"><div><div class="eyebrow">YOUR DAILY ROUTINE</div><h1>让每天的计划，<br>自动进行。</h1><p class="lede">直接登录 Zepp Life，设置自己的步数计划。<br>关闭网页后，已开启的自动任务仍会继续。</p></div><div class="intro-note">每个账号独立管理<br>无需 GitHub 账号</div></section>
+<div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+<div class="workspace"><section>
+<article id="login-panel" class="card"><div class="eyebrow">01 / SIGN IN</div><h2>登录 Zepp Life</h2><p class="card-description">所有人均可使用。首次验证成功后，自动创建本站账号。</p>
+<form id="login-form"><label for="account">邮箱 / 手机号</label><input id="account" name="account" type="text" autocomplete="username" maxlength="254" required placeholder="Zepp Life 邮箱或中国大陆手机号">
+<label for="password">Zepp Life 密码</label><div class="password-wrap"><input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required placeholder="输入账号密码"><button class="password-toggle" type="button" id="toggle-password">显示</button></div>
+<label class="consent"><input id="consent" type="checkbox" required><span>同意本站向 Zepp 验证登录，并加密保存登录凭据，用于我开启的任务。密码只用于当次验证，不保存到数据库。本站为第三方工具。</span></label>
+<button class="primary" type="submit">登录 / 开通账号 <span>→</span></button><p class="hint">请使用 Zepp Life 的密码登录信息；小米账号或短信验证码不能替代密码。网站不创建 Zepp 官方账号。</p></form></article>
+<article id="account-panel" class="card" hidden><div class="card-heading"><div><div class="eyebrow">MY ACCOUNT</div><h2 id="account-label">我的账号</h2></div><button class="text-button" id="logout">退出登录</button></div><div id="account-state" class="notice"></div>
+<form id="settings-form"><div class="range"><div><label for="min-step">每日最小步数</label><input id="min-step" type="number" min="0" max="100000" step="1" required value="18000"></div><span>—</span><div><label for="max-step">每日最大步数</label><input id="max-step" type="number" min="0" max="100000" step="1" required value="25000"></div></div><p class="hint">日内逐渐增加，22 点后达到设置范围。同一天内，本站已提交的步数不会因调低范围而减少。</p>
+<label class="consent"><input type="checkbox" id="enabled"><span>开启每日自动执行（首次登录默认关闭）</span></label><button class="primary" type="submit">保存我的计划</button></form>
+<button class="secondary-button" id="run-now">立即执行一次</button><p class="hint">使用已保存的计划。手动执行每分钟 1 次、每天最多 6 次（额度按 UTC 日期重置）。</p>
+<details class="danger-zone"><summary>删除本站账号</summary><p class="hint">删除保存的登录凭据、设置和执行记录，停止本站的后续任务。Zepp 官方账号不受影响。</p><label class="consent"><input type="checkbox" id="confirm-delete"><span>我确认删除当前本站账号及其数据</span></label><button id="delete-account" class="danger-button">删除我的数据</button></details></article>
+<article id="history-panel" class="card" hidden><div class="card-heading"><h2>执行记录</h2><button class="text-button" id="refresh-runs">刷新</button></div><p class="hint">仅显示你的最近 30 次记录，记录保留 30 天。</p><div id="runs-list"></div></article>
+</section><aside><article class="card schedule"><div class="eyebrow">DAILY SCHEDULE</div><h2>一天六次，从容进行</h2><span class="timezone">北京时间 · UTC+8</span><div class="times"><span>08:35</span><span>10:35</span><span>12:35</span><span>14:35</span><span>16:35</span><span>22:35</span></div><p class="hint">开启计划后自动排队执行；多个账号可并发处理，同一账号依次执行。实际开始时间可能稍有延迟。</p></article>
+<article class="card"><div class="eyebrow">YOUR DATA</div><h2>只管理自己的账号</h2><p class="card-description">设置、凭据和执行记录按账号隔离。退出登录不会暂停计划；需要停止时，取消自动执行并保存。</p><p class="hint">凭据失效会暂停自动执行，请重新登录后再次开启计划。暂停不会撤回已经发出的请求。</p><p class="hint">当前站点最多容纳 200 个账号，名额满时暂停新账号开通。旧版 GitHub 配置需要在这里重新登录并设置。</p></article></aside></div>
+<footer><span>MiMotion · 独立账号，独立计划</span><span>Zepp 登录与同步结果以官方服务为准</span></footer></main></body></html>

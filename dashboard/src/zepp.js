@@ -5,7 +5,7 @@ export function validate(data) {
   if (/^(\+86)?1[3-9]\d{9}$/.test(account)) account = account.startsWith('+86') ? account : '+86' + account;
   else if (!/^[^\s@#]+@[^\s@#]+\.[^\s@#]+$/.test(account)) throw new UserError('请输入 Zepp Life 邮箱或中国大陆手机号。');
   const password = data.password;
-  if (typeof password !== 'string' || password.length < 1 || password.length > 256 || password.includes('#')) throw new UserError('请输入密码。当前脚本不支持含 # 的密码。');
+  if (typeof password !== 'string' || password.length < 1 || password.length > 256) throw new UserError('请输入有效密码。');
   const lo = Number(data.min_step), hi = Number(data.max_step);
   if (![data.min_step, data.max_step].every(v => ['string', 'number'].includes(typeof v) && String(v).trim() !== '')) throw new UserError('请输入步数范围。');
   if (data.min_step === '' || data.max_step === '' || !Number.isInteger(lo) || !Number.isInteger(hi) || lo < 0 || lo > hi || hi > 100000) throw new UserError('步数应为 0–100000 的整数，且最小值不大于最大值。');

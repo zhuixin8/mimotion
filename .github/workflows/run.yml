@@ -1,17 +1,8 @@
 name: 刷步数
 
+# Legacy runner: manual only. Cloudflare now schedules the website accounts.
 on:
-  schedule:
-    # Beijing time: 08:35, 10:35, 12:35, 14:35, 16:35, 22:35
-    - cron: '35 0,2,4,6,8,14 * * *'
   workflow_dispatch:
-  push:
-    branches: [master]
-    paths:
-      - 'main.py'
-      - 'util/**'
-      - 'requirements.txt'
-      - '.github/workflows/run.yml'
 
 permissions:
   contents: write

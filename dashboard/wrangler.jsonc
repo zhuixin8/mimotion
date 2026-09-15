@@ -4,16 +4,54 @@
   "main": "dist/worker.js",
   "account_id": "94304fd699fbc51c59d2124f311b2862",
   "compatibility_date": "2026-09-15",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "workers_dev": true,
   "preview_urls": false,
-  "observability": {"enabled": true, "head_sampling_rate": 0.1, "logs": {"enabled": true, "invocation_logs": false}},
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false
+    }
+  },
   "vars": {
     "APP_ORIGIN": "https://mimotion-dashboard.113618446.workers.dev",
-    "GITHUB_OWNER_ID": "48154595",
-    "GITHUB_OWNER": "zhuixin8",
-    "GITHUB_REPO": "zhuixin8/mimotion"
+    "MAX_ACCOUNTS": "200"
   },
-  "kv_namespaces": [{"binding": "STORE", "id": "0c07828f568546c0960dad6e1668acd0"}],
-  "build": {"command": "npm run build"}
+  "build": {
+    "command": "npm run build"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mimotion-users",
+      "database_id": "69777f7e-0e50-4473-b28c-99dd024f9756",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "JOBS",
+        "queue": "mimotion-jobs"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "mimotion-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_concurrency": 3,
+        "max_retries": 3
+      }
+    ]
+  },
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
+  }
 }

@@ -1,71 +1,28 @@
 const $ = id => document.getElementById(id);
-let state = {}, busy = false, poll;
-const bootstrap = new URLSearchParams(location.hash.slice(1)).get('setup');
-if (location.hash) history.replaceState(null, '', location.pathname);
-function show(id, visible = true) { $(id).hidden = !visible; }
-function notice(id, message, kind = '') { $(id).textContent = message; $(id).className = 'notice ' + kind; show(id); }
+let state = null, busy = false;
+function notice(text, error=false) { $('notice').textContent=text; $('notice').className='notice '+(error?'error':'success'); $('notice').hidden=!text; }
 async function api(path, data) {
-  const response = await fetch(path, {method: data === undefined ? 'GET' : 'POST', credentials: 'same-origin', headers: data === undefined ? {} : {'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf || ''}, ...(data === undefined ? {} : {body: JSON.stringify(data)})});
-  const result = await response.json(); if (!response.ok) throw new Error(result.message || '请求失败，请稍后重试。'); return result;
+ const response=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json','X-CSRF-Token':state?.csrf||''},body:data===undefined?undefined:JSON.stringify(data),credentials:'same-origin'});
+ let result; try { result=await response.json(); } catch { throw new Error('网站暂时没有返回有效响应，请刷新后重试。'); }
+ if(!response.ok) throw new Error(result.error||'请求失败，请重试。'); return result;
 }
-function step(n) { for (let i = 1; i <= 3; i++) $('step' + i).className = i === n ? 'current' : i < n ? 'done' : ''; }
-function ready(summary) {
-  state.summary = summary; show('save-panel', !!summary); if (!summary) return;
-  $('verified-account').textContent = summary.account;
-  $('verified-steps').textContent = `每日 ${summary.min_step.toLocaleString()}–${summary.max_step.toLocaleString()} 步`;
-  $('device-note').textContent = summary.device_found ? '已找到绑定设备。' : '未查到绑定设备；登录有效，但微信等平台能否同步仍需实际验证。';
-  $('replace-config').checked = false; step(3);
+async function action(fn) { if(busy)return; busy=true; const buttons=[...document.querySelectorAll('button')]; buttons.forEach(b=>b.disabled=true); try { await fn(); } catch(e) {notice(e.message,true);} finally {busy=false;buttons.forEach(b=>b.disabled=false);} }
+async function load() {
+ state=await api('/api/status'); $('login-panel').hidden=state.signed_in; $('account-panel').hidden=!state.signed_in; $('history-panel').hidden=!state.signed_in;
+ if(state.signed_in) {const a=state.account; $('account-label').textContent=a.label; $('min-step').value=a.min_step; $('max-step').value=a.max_step; $('enabled').checked=a.enabled; $('account-state').textContent=a.needs_login?'登录凭据已失效，请退出后重新登录，再开启计划。':a.enabled?'自动执行已开启，关闭网页也会继续。':'自动执行已暂停，可手动执行一次。'; await runs();}
 }
-async function refreshRuns() {
-  try {
-    const result = await api('/api/runs'); $('runs-list').replaceChildren();
-    if (!result.runs.length) { $('runs-list').textContent = '还没有执行记录'; return; }
-    for (const run of result.runs) {
-      const row = document.createElement('div'); row.className = 'run';
-      const a = document.createElement('a'); a.href = run.url; a.target = '_blank'; a.rel = 'noreferrer';
-      a.textContent = new Date(run.created_at).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false});
-      const label = document.createElement('strong');
-      label.textContent = run.status !== 'completed' ? (run.status === 'in_progress' ? '运行中' : '排队中') : ({success: '成功', failure: '失败', cancelled: '已取消', skipped: '已跳过', timed_out: '超时'}[run.conclusion] || '已结束');
-      label.className = run.status === 'completed' ? run.conclusion : 'pending'; row.append(a, label); $('runs-list').append(row);
-    }
-  } catch (e) { $('runs-list').textContent = e.message; }
+async function runs() {
+ const {runs}=await api('/api/runs'); const box=$('runs-list');box.replaceChildren();
+ if(!runs.length){box.textContent='还没有执行记录。保存计划后，可点击「立即执行一次」。';return;}
+ const labels={pending:'等待排队',queued:'排队中',running:'执行中',success:'成功',failed:'失败',unknown:'结果待确认',skipped:'已跳过'};
+ for(const r of runs){const row=document.createElement('div');row.className='run'; const info=document.createElement('div'); const title=document.createElement('strong');title.textContent=(r.kind==='schedule'?'自动':'手动')+' · '+r.step.toLocaleString()+' 步'; const detail=document.createElement('div'); detail.textContent=new Date(r.created_at*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' · '+r.message;info.append(title,detail);const status=document.createElement('strong');status.textContent=labels[r.status]||r.status;status.className=r.status==='success'?'success':['failed','unknown'].includes(r.status)?'failure':'pending';row.append(info,status);box.append(row);}
 }
-async function init() {
-  try {
-    state = await api('/api/status'); $('repository').textContent = state.repository;
-    show('global-status', false); show('setup-panel', !state.configured); show('signin-panel', state.configured && !state.signed_in); show('workspace', state.signed_in); show('logout', state.signed_in);
-    if (!state.configured) { $('create-app').disabled = !bootstrap; $('setup-help').textContent = bootstrap ? '已载入专属初始化凭据。下一步会跳转 GitHub。' : '请使用部署时提供的专属初始化链接。'; }
-    if (state.signed_in) {
-      $('github-user').textContent = state.login; $('repo-link').href = 'https://github.com/' + state.repository;
-      if (state.install_url) { $('install-link').href = state.install_url; show('install-link'); }
-      step(2); ready(state.summary); await refreshRuns();
-    }
-  } catch (e) { notice('global-status', e.message, 'error'); }
-}
-$('create-app').addEventListener('click', async () => {
-  $('create-app').disabled = true;
-  try { const result = await api('/api/setup/start', {token: bootstrap}); const form = document.createElement('form'); form.method = 'POST'; form.action = result.action; const input = document.createElement('input'); input.type = 'hidden'; input.name = 'manifest'; input.value = result.manifest; form.append(input); document.body.append(form); form.submit(); }
-  catch (e) { notice('global-status', e.message, 'error'); $('create-app').disabled = false; }
-});
-$('show-password').addEventListener('click', () => { const showing = $('password').type === 'password'; $('password').type = showing ? 'text' : 'password'; $('show-password').textContent = showing ? '隐藏' : '显示'; $('show-password').setAttribute('aria-label', showing ? '隐藏密码' : '显示密码'); });
-$('zepp-form').addEventListener('submit', async e => {
-  e.preventDefault(); if (busy) return; busy = true;
-  const values = {account: $('account').value, password: $('password').value, min_step: $('min-step').value, max_step: $('max-step').value};
-  $('password').value = ''; $('zepp-fields').disabled = true; $('save').disabled = true; ready(null); step(2);
-  notice('login-status', '正在验证登录并获取配置，请稍候…');
-  try { const result = await api('/api/zepp/login', values); ready(result.summary); notice('login-status', '验证成功。所需配置已生成，10 分钟内可保存到 GitHub。', 'success'); }
-  catch (e) { notice('login-status', e.message, 'error'); }
-  finally { values.password = ''; busy = false; $('zepp-fields').disabled = false; $('save').disabled = false; }
-});
-$('save').addEventListener('click', async () => {
-  if (busy) return; if (!$('replace-config').checked) { notice('save-status', '请先勾选配置替换说明。', 'error'); return; }
-  busy = true; $('save').disabled = true; $('zepp-fields').disabled = true; notice('save-status', '正在加密保存配置并请求运行…');
-  try { const result = await api('/api/config/save', {replace_config: true}); notice('save-status', result.message, 'success'); state.summary = null;
-    let remaining = 12; clearInterval(poll); poll = setInterval(() => { if (--remaining <= 0) clearInterval(poll); if (!document.hidden) refreshRuns(); }, 10000); await refreshRuns();
-  } catch (e) { notice('save-status', e.message, 'error'); $('save').disabled = false; }
-  finally { busy = false; $('zepp-fields').disabled = false; }
-});
-$('refresh').addEventListener('click', refreshRuns);
-$('logout').addEventListener('click', async () => { if (busy) return; try { await api('/api/logout', {}); location.replace('/'); } catch (e) { notice('global-status', e.message, 'error'); } });
-window.addEventListener('pagehide', () => { $('password').value = ''; clearInterval(poll); });
-init();
+$('toggle-password').onclick=()=>{const p=$('password');p.type=p.type==='password'?'text':'password';$('toggle-password').textContent=p.type==='password'?'显示':'隐藏';};
+$('login-form').onsubmit=e=>{e.preventDefault();action(async()=>{const data={account:$('account').value,password:$('password').value,min_step:18000,max_step:25000,consent:$('consent').checked};$('password').value='';notice('正在验证 Zepp Life，请稍候…');await api('/api/login',data);await load();notice('登录成功。请设置并保存自己的计划。');});};
+$('settings-form').onsubmit=e=>{e.preventDefault();action(async()=>{await api('/api/settings',{min_step:$('min-step').value,max_step:$('max-step').value,enabled:$('enabled').checked});await load();notice('计划已保存。');});};
+$('run-now').onclick=()=>action(async()=>{await api('/api/run',{});await runs();notice('任务已加入队列，请查看执行记录。');});
+$('refresh-runs').onclick=()=>action(runs);
+$('logout').onclick=()=>action(async()=>{await api('/api/logout',{});await load();notice('已退出登录。已开启的自动计划继续执行。');});
+$('delete-account').onclick=()=>action(async()=>{if(!$('confirm-delete').checked)throw new Error('请先勾选删除确认。');await api('/api/delete',{confirm:'DELETE'});await load();notice('本站账号、凭据和记录已删除。');});
+load().catch(e=>notice(e.message,true));
+setInterval(()=>{if(state?.signed_in&&!busy&&!document.hidden)runs().catch(()=>{});},30000);
