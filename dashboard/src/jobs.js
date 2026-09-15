@@ -2,6 +2,7 @@ import {seal, open, UserError} from './security.js';
 import {refreshToken, submitSteps} from './steps.js';
 import {readDaySteps, checkConnection, outcome, verificationText} from './verification.js';
 import {requireMembership} from './licensing.js';
+import {SCHEDULE_UTC_HOURS} from './schedule.js';
 
 export const seconds = () => Math.floor(Date.now() / 1000);
 export const beijing = (ms = Date.now()) => new Date(ms + 8 * 3600000).toISOString();
@@ -45,7 +46,7 @@ async function dispatch(env, id) {
 }
 export async function scheduled(controller, env) {
   const ms = controller.scheduledTime, date = new Date(ms);
-  if (date.getUTCMinutes() === 35 && [0,2,4,6,8,14].includes(date.getUTCHours())) {
+  if (date.getUTCMinutes() === 35 && SCHEDULE_UTC_HOURS.includes(date.getUTCHours())) {
     const local = beijing(ms), ratio = Math.min(1, Math.max(0.05, (Number(local.slice(11,13))-6)/16));
     await query(env, `INSERT INTO runs(id,account_id,slot,kind,day,step,created_at,updated_at)
       SELECT lower(hex(randomblob(16))),id,?,'schedule',?,CAST((min_step + abs(random() % (max_step-min_step+1))) * ? AS INTEGER),?,?

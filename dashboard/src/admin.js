@@ -1,6 +1,7 @@
 import {equal,open,seal,random,UserError} from './security.js';
 import {hash} from './licensing.js';
 import {verifyAdminPassword} from './admin-password.js';
+import {adminOperations} from './operations.js';
 import {query,limit,seconds} from './jobs.js';
 const COOKIE='__Host-mimotion-admin-v1';
 const json=data=>Response.json(data);
@@ -39,6 +40,7 @@ export async function adminRoute(req,env,url,data) {
     if(!await equal(req.headers.get('X-CSRF-Token'),s.csrf))throw new UserError('管理页面已过期，请刷新。',403);
     await limit(env,'admin-write',40,60);
   }
+  if(['site','users/detail','users/note','issues','issues/review'].includes(path.slice('/api/zhuixins_x/'.length)))return adminOperations(req,env,url,data);
   if(path==='/api/zhuixins_x/overview'&&req.method==='GET'){
     const users=await query(env,'SELECT COUNT(*) total,COALESCE(SUM(expires_at>? AND suspended=0),0) active,COALESCE(SUM(suspended=1),0) suspended FROM memberships',seconds()).first();
     const codes=await query(env,'SELECT COUNT(*) total,COALESCE(SUM(redeemed_by IS NOT NULL),0) redeemed,COALESCE(SUM(redeemed_by IS NULL AND disabled=0 AND (valid_until IS NULL OR valid_until>?)),0) available FROM activation_codes',seconds()).first();

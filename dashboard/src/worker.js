@@ -5,6 +5,7 @@ import {random, equal, seal, open, UserError, readText, utf8, b64} from './secur
 import {loginZepp, validate} from './zepp.js';
 import {query, limit, seconds, enqueue, scheduled, consume} from './jobs.js';
 import {history} from './history.js';
+import {publicSite} from './site.js';
 import {membership,requireMembership,redeem,licenseHistory} from './licensing.js';
 import {adminRoute} from './admin.js';
 import adminHtml from './admin.html';
@@ -41,6 +42,7 @@ async function route(request, env) {
   if (request.method === 'GET') {
     const assets = {'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/zhuixins_x':[adminHtml,'text/html'], '/zhuixins_x/':[adminHtml,'text/html'], '/zhuixins_x/app.js':[adminClient,'text/javascript']};
     if (assets[path]) return new Response(assets[path][0], {headers:{'content-type':assets[path][1]+'; charset=utf-8'}});
+    if (path === '/api/site') return json(await publicSite(env));
     if (path === '/favicon.ico') return new Response(null,{status:204});
   }
   let data;
@@ -63,11 +65,11 @@ async function route(request, env) {
     const id = await identity(env, 'zepp-user:' + String(tokens.user_id));
     const version = random(), t = seconds();
     const result = await query(env, `INSERT INTO accounts(id,label,credentials,min_step,max_step,session_version,created_at,updated_at)
-      SELECT ?,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM accounts) < ? OR EXISTS(SELECT 1 FROM accounts WHERE id=?)
+      SELECT ?,?,?,?,?,?,?,? WHERE ((SELECT registration_open FROM site_settings WHERE id=1)=1 OR EXISTS(SELECT 1 FROM memberships WHERE account_id=?)) AND ((SELECT COUNT(*) FROM accounts) < ? OR EXISTS(SELECT 1 FROM accounts WHERE id=?))
       ON CONFLICT(id) DO UPDATE SET credentials=excluded.credentials,label=excluded.label,
       session_version=excluded.session_version,needs_login=0,updated_at=excluded.updated_at
-      WHERE accounts.lease_until < ?`, id, verified.summary.account, await seal(tokens, env.MASTER_SECRET, 'zepp:' + id), v.lo, v.hi, version, t, t, Number(env.MAX_ACCOUNTS || 200), id, t).run();
-    if (!result.meta.changes) throw new UserError('账号正在执行任务，或站点注册名额已满，请稍后再试。', 409);
+      WHERE accounts.lease_until < ?`, id, verified.summary.account, await seal(tokens, env.MASTER_SECRET, 'zepp:' + id), v.lo, v.hi, version, t, t, id, Number(env.MAX_ACCOUNTS || 200), id, t).run();
+    if (!result.meta.changes) throw new UserError('账号正在执行任务、新用户注册已关闭或名额已满，请稍后再试。', 409);
     await query(env,'INSERT INTO memberships(account_id,created_at,updated_at) VALUES(?,?,?) ON CONFLICT(account_id) DO NOTHING',id,t,t).run();
     const s = {id,version,csrf:random(),exp:t+86400};
     // Logging in schedules a read-only health check, never a step submission.

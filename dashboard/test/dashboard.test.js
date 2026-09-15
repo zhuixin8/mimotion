@@ -9,7 +9,7 @@ const origin='https://mimotion.test';
 const time=()=>Math.floor(Date.now()/1000);
 const day=()=>new Date(Date.now()+28800000).toISOString().slice(0,10);
 function environment(){
- const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');for(const file of ['0001_multiuser.sql','0002_delivery.sql','0003_verification.sql','0004_saas.sql'])db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
+ const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');for(const file of ['0001_multiuser.sql','0002_delivery.sql','0003_verification.sql','0004_saas.sql','0005_operations.sql'])db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
  const env={APP_ORIGIN:origin,MASTER_SECRET:'test-secret-only',MAX_ACCOUNTS:'200',db,sent:[],queries:0};
  function statement(sql,args=[]){return {bind(...v){return statement(sql,v);},async first(){env.queries++;return db.prepare(sql).get(...args)||null;},async all(){env.queries++;return {results:db.prepare(sql).all(...args)};},async run(){env.queries++;const r=db.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}};}};}
  env.DB={prepare:sql=>statement(sql),batch:async statements=>{db.exec('BEGIN');try{const r=await Promise.all(statements.map(s=>s.run()));db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}};
@@ -99,3 +99,67 @@ test('admin changes use revisions, are audited, and can suspend/resume without e
 test('removing a profile preserves expiry and bans; admin key rotation revokes all old sessions',async()=>{const env=environment(),a=await account(env,'A'),admin=await administrator(env);env.db.prepare('UPDATE memberships SET suspended=1').run();assert.equal((await api(env,'/api/delete',{confirm:'DELETE'},a)).status,200);assert.equal(env.db.prepare('SELECT COUNT(*) n FROM accounts').get().n,0);assert.equal(env.db.prepare('SELECT suspended FROM memberships').get().suspended,1);const r=await api(env,'/api/zhuixins_x/rotate-key',{confirm:true},admin);assert.equal(r.status,200);const {key}=await r.json();assert.equal(key.length,43);assert.equal((await api(env,'/api/zhuixins_x/users',undefined,admin)).status,401);assert.equal((await api(env,'/api/zhuixins_x/login',{key:admin.key})).status,401);assert.equal((await api(env,'/api/zhuixins_x/login',{key})).status,200);});
 
 test('migration grants existing accounts exactly seven days and does not create a new-user trial',()=>{const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');for(const file of ['0001_multiuser.sql','0002_delivery.sql','0003_verification.sql'])db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));db.prepare('INSERT INTO accounts(id,label,credentials,session_version,created_at,updated_at) VALUES(?,?,?,?,?,?)').run('existing','masked','encrypted','v',time(),time());db.exec(readFileSync(new URL('../migrations/0004_saas.sql',import.meta.url),'utf8'));const m=db.prepare('SELECT * FROM memberships').get();assert.equal(m.account_id,'existing');assert.ok(Math.abs(m.expires_at-(time()+7*86400))<=1);assert.equal(db.prepare('SELECT COUNT(*) n FROM activation_codes').get().n,0);});
+
+test('site settings require administrator, validate input and prevent stale overwrites',async()=>{
+ const env=environment(),a=await account(env,'A'),admin=await administrator(env);
+ const initial=await (await api(env,'/api/site')).json();assert.equal(initial.registration_open,true);assert.deepEqual(Object.keys(initial).sort(),['announcement','contact','name','registration_open']);
+ const data={name:'My site',announcement:'<img src=x onerror=alert(1)>',contact:'support@example.test',registration_open:false,revision:1};
+ assert.equal((await api(env,'/api/zhuixins_x/site',data,a)).status,401);
+ assert.equal((await api(env,'/api/zhuixins_x/site',data,{...admin,csrf:'wrong'})).status,403);
+ assert.equal((await api(env,'/api/zhuixins_x/site',{...data,registration_open:'false'},admin)).status,400);
+ assert.equal((await api(env,'/api/zhuixins_x/site',data,admin)).status,200);
+ assert.equal((await api(env,'/api/zhuixins_x/site',{...data,name:'stale'},admin)).status,409);
+ const published=await (await api(env,'/api/site')).json();assert.equal(published.name,'My site');assert.equal(published.registration_open,false);assert.equal(published.announcement,data.announcement);
+ assert.equal(env.db.prepare("SELECT COUNT(*) n FROM admin_audit WHERE action='site_update'").get().n,1);
+});
+
+test('closed registration rejects new identities while existing members can restore deleted profiles',async(t)=>{
+ const env=environment();zeppMock(t);const input={account:'known@example.com',password:'dummy',min_step:1000,max_step:2000,consent:true};
+ env.db.prepare('UPDATE site_settings SET registration_open=0').run();assert.equal((await api(env,'/api/login',input)).status,409);assert.equal(env.db.prepare('SELECT COUNT(*) n FROM accounts').get().n,0);
+ env.db.prepare('UPDATE site_settings SET registration_open=1').run();assert.equal((await api(env,'/api/login',input)).status,200);
+ env.db.prepare('DELETE FROM accounts').run();env.db.prepare('UPDATE site_settings SET registration_open=0').run();assert.equal((await api(env,'/api/login',input)).status,200);
+ assert.equal(env.db.prepare('SELECT COUNT(*) n FROM memberships').get().n,1);
+});
+
+test('next schedule respects Beijing rollover, paused plans, credentials and subscription cutoff',async()=>{
+ const {nextExecution}=await import('../src/schedule.js');const now=Date.parse('2026-09-15T14:36:00Z'),a={enabled:1,needs_login:0},m={active:true,suspended:false,expires_at:now/1000+86400};
+ assert.equal(nextExecution(a,m,now).at,Date.parse('2026-09-16T00:35:00Z')/1000);
+ for(const [account,access] of [[{...a,enabled:0},m],[{...a,needs_login:1},m],[a,{...m,active:false}],[a,{...m,suspended:true}],[null,m],[a,{...m,expires_at:now/1000+60}]])assert.equal(nextExecution(account,access,now).at,null);
+});
+
+test('runtime overview is scoped to current account and labels the date of the latest reading',async()=>{
+ const env=environment(),a=await account(env,'A');await account(env,'B');addRun(env,'a-run','A','manual','success','2026-09-01');addRun(env,'b-run','B','manual','success');
+ env.db.prepare("UPDATE runs SET observed_step=123,checked_at=? WHERE id='a-run'").run(time());env.db.prepare("UPDATE runs SET observed_step=999,checked_at=? WHERE id='b-run'").run(time()+20);
+ const h=await (await api(env,'/api/runs?account_id=B',undefined,a)).json();assert.equal(h.runtime.latest.id,'a-run');assert.equal(h.runtime.reading.observed_step,123);assert.equal(h.runtime.reading.day,'2026-09-01');
+});
+
+test('user detail and notes stay administrator-only, omit credentials and guard stale edits',async()=>{
+ const env=environment(),a=await account(env,'A'),admin=await administrator(env);addRun(env,'only-A','A');await account(env,'B');addRun(env,'only-B','B');
+ const path='/api/zhuixins_x/users/detail?id=A';assert.equal((await api(env,path,undefined,a)).status,401);
+ assert.equal((await api(env,'/api/zhuixins_x/users/note',{id:'A',note:'private admin note',revision:0},admin)).status,200);
+ assert.equal((await api(env,'/api/zhuixins_x/users/note',{id:'A',note:'stale',revision:0},admin)).status,409);
+ const d=await (await api(env,path,undefined,admin)).json();assert.equal(d.note.note,'private admin note');assert.deepEqual(d.runs.map(r=>r.id),['only-A']);for(const field of ['credentials','session_version','key_hash','login_token'])assert.ok(!JSON.stringify(d).includes(field));
+ const publicHistory=await (await api(env,'/api/runs',undefined,a)).text();assert.ok(!publicHistory.includes('private admin note'));
+ env.db.prepare("DELETE FROM accounts WHERE id='A'").run();const deleted=await (await api(env,path,undefined,admin)).json();assert.equal(deleted.account,null);assert.equal(deleted.note.note,'private admin note');
+});
+
+test('issue review is atomic, administrator-only, audited, and does not repeat a task',async()=>{
+ const env=environment(),a=await account(env,'A'),admin=await administrator(env);addRun(env,'issue','A','manual','unknown');
+ assert.equal((await api(env,'/api/zhuixins_x/issues',undefined,a)).status,401);
+ let d=await (await api(env,'/api/zhuixins_x/issues',undefined,admin)).json();assert.equal(d.issues[0].category,'unknown');const r=d.issues[0];
+ const review={id:r.id,stamp:r.stamp,revision:0,note:'Asked user to check cloud data'};
+ assert.equal((await api(env,'/api/zhuixins_x/issues/review',review,admin)).status,200);
+ assert.equal((await api(env,'/api/zhuixins_x/issues/review',review,admin)).status,409);
+ d=await (await api(env,'/api/zhuixins_x/issues',undefined,admin)).json();assert.equal(d.issues.length,0);assert.equal(d.counts.handled,1);assert.equal(env.sent.length,0);assert.equal(env.db.prepare("SELECT status FROM runs WHERE id='issue'").get().status,'unknown');
+ env.db.prepare("UPDATE runs SET verification='below_target',checked_at=? WHERE id='issue'").run(time());d=await (await api(env,'/api/zhuixins_x/issues',undefined,admin)).json();assert.equal(d.issues.length,1);assert.equal(d.issues[0].review_revision,1);
+ assert.equal((await api(env,'/api/zhuixins_x/issues/review',{...review,revision:1},admin)).status,409);
+ assert.equal(env.db.prepare("SELECT COUNT(*) n FROM admin_audit WHERE action='issue_review'").get().n,1);
+});
+
+test('exception filters distinguish delayed tasks and credentials; pagination is bounded',async()=>{
+ const env=environment(),admin=await administrator(env);await account(env,'A');env.db.prepare("UPDATE accounts SET needs_login=1 WHERE id='A'").run();
+ for(let i=0;i<24;i++)addRun(env,'failed-'+i,'A','manual','failed');addRun(env,'slow','A');env.db.prepare("UPDATE runs SET updated_at=? WHERE id='slow'").run(time()-1000);
+ const a=await (await api(env,'/api/zhuixins_x/issues',undefined,admin)).json(),b=await (await api(env,'/api/zhuixins_x/issues?page=1',undefined,admin)).json();assert.equal(a.issues.length,20);assert.equal(a.has_more,true);assert.equal(b.issues.length,6);
+ for(const kind of ['credentials','delayed']){const d=await (await api(env,'/api/zhuixins_x/issues?filter='+kind,undefined,admin)).json();assert.equal(d.issues.length,1);assert.equal(d.issues[0].category,kind);}
+ assert.equal((await api(env,'/api/zhuixins_x/issues?filter=bad',undefined,admin)).status,400);
+});

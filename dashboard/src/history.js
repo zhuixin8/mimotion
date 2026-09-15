@@ -1,6 +1,7 @@
 import {query, beijing} from './jobs.js';
 import {UserError} from './security.js';
 import {membership} from './licensing.js';
+import {nextExecution} from './schedule.js';
 
 export async function history(env, accountId, url) {
   const filter = url.searchParams.get('filter') || 'all';
@@ -22,5 +23,9 @@ export async function history(env, accountId, url) {
     COALESCE(SUM(status IN ('pending','queued','running') OR verification='checking'),0) AS active
     FROM runs WHERE account_id=? AND day=? AND kind IN ('manual','schedule')`, accountId, beijing().slice(0,10)).first();
   const check = await query(env, "SELECT status,message,observed_step,verification,day,created_at,finished_at FROM runs WHERE account_id=? AND kind='check' ORDER BY created_at DESC,id DESC LIMIT 1", accountId).first();
-  return {runs:results.slice(0,30),page,has_more:results.length>30,stats,check,membership:await membership(env,accountId)};
+  const access=await membership(env,accountId);
+  const account=await query(env,'SELECT id,enabled,needs_login,min_step,max_step FROM accounts WHERE id=?',accountId).first();
+  const latest=await query(env,"SELECT id,kind,status,verification,step,created_at,finished_at,message FROM runs WHERE account_id=? AND kind IN ('manual','schedule') ORDER BY created_at DESC,id DESC LIMIT 1",accountId).first();
+  const reading=await query(env,'SELECT day,observed_step,checked_at FROM runs WHERE account_id=? AND observed_step IS NOT NULL AND checked_at IS NOT NULL ORDER BY checked_at DESC,id DESC LIMIT 1',accountId).first();
+  return {runs:results.slice(0,30),page,has_more:results.length>30,stats,check,membership:access,runtime:{latest,reading,plan:account?{enabled:!!account.enabled,needs_login:!!account.needs_login,min_step:account.min_step,max_step:account.max_step}:null,next:nextExecution(account,access)}};
 }

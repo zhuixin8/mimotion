@@ -29,6 +29,20 @@ function syncAccess(access=state?.account?.membership){
  $('overview-plan').textContent=!active?'不可执行':state.account.needs_login?'需重新登录':state.account.enabled?'已开启':'已暂停';
  $('overview-range').textContent=Number(state.account.min_step).toLocaleString()+' – '+Number(state.account.max_step).toLocaleString()+' 步 / 天';
 }
+async function loadSite(){
+ const site=await api('/api/site');document.querySelectorAll('[data-site-name]').forEach(e=>e.textContent=site.name);document.title=site.name+' · 我的控制台';document.querySelector('.brand').setAttribute('aria-label',site.name+' 首页');
+ $('site-announcement').hidden=!site.announcement;$('announcement-text').textContent=site.announcement;
+ $('site-contact').hidden=!site.contact;$('site-contact').textContent='客服：'+site.contact;
+ $('registration-message').textContent=site.registration_open?'首次登录将自动创建本站账号。':'新用户注册已暂停，已有账号仍可登录。';
+}
+function renderRuntime(runtime){
+ const status={pending:'等待排队',queued:'排队中',running:'执行中',success:'接口已接收',failed:'执行失败',unknown:'结果待确认',skipped:'已跳过'};
+ const r=runtime.latest;$('runtime-latest').textContent=r?(r.verification==='matched'?'云端达到目标':status[r.status]||r.status):'尚未执行';
+ $('runtime-latest-time').textContent=r?when(r.finished_at||r.created_at)+' · '+(r.kind==='manual'?'手动':'自动'):'可先测试连接，再执行一次';
+ $('runtime-next').textContent=runtime.next.at?when(runtime.next.at):'暂无安排';$('runtime-next-reason').textContent=runtime.next.reason;
+ $('runtime-reading').textContent=runtime.reading?steps(runtime.reading.observed_step):'尚未读取';
+ $('runtime-reading-time').textContent=runtime.reading?'数据日期 '+runtime.reading.day+' · 读取于 '+when(runtime.reading.checked_at):'测试连接后显示云端读数';
+}
 async function licenses(){const d=await api('/api/license');syncAccess(d.membership);const box=$('redemption-list');box.replaceChildren();if(!d.redemptions.length)box.textContent='暂无激活码兑换记录。';for(const r of d.redemptions){const item=element('div',undefined,'run');item.textContent=r.hint+' · '+r.duration_days+' 天 · '+when(r.created_at)+' · 兑换后到期 '+when(r.new_expiry);box.append(item);}}
 const verifyLabels={checking:'正在读回核对',not_checked:'尚未核对',matched:'云端步数已达到目标',below_target:'云端步数暂未达到目标，可稍后核对',unavailable:'暂未读回步数，效果尚未核实',readable:'当天步数可读取'};
 function notice(text,error=false){$('notice').textContent=text;$('notice').className='notice '+(error?'error':'success');$('notice').hidden=!text;}
@@ -49,9 +63,9 @@ async function runs(){
  const session=state?.csrf;
  const params=new URLSearchParams({page:String(page),filter:$('filter-status').value,day:$('filter-day').value});
  const data=await api('/api/runs?'+params);if(!state?.signed_in||state.csrf!==session)return;
- syncAccess(data.membership);const box=$('runs-list');const expanded=new Set([...box.querySelectorAll('details[open]')].map(e=>e.dataset.id));box.replaceChildren();
+ if(data.runtime.plan)Object.assign(state.account,data.runtime.plan);syncAccess(data.membership);renderRuntime(data.runtime);const box=$('runs-list');const expanded=new Set([...box.querySelectorAll('details[open]')].map(e=>e.dataset.id));box.replaceChildren();
  $('stat-total').textContent=data.stats.total;$('stat-accepted').textContent=data.stats.accepted;$('stat-matched').textContent=data.stats.matched;
- const c=data.check;$('connection-result').textContent=!c?(state.account.membership.active?'尚未测试，点击「重新测试」检查连接。':'使用期有效后可测试账号连接。'):['pending','queued','running'].includes(c.status)?'正在测试连接，请稍候…':(c.status==='success'?'连接测试通过':'连接测试未通过')+' · '+c.message+(c.observed_step!==null?' '+c.day+' 云端：'+steps(c.observed_step):'')+' · '+when(c.finished_at||c.created_at);
+ const c=data.check;$('connection-result').textContent=!c?(state.account.membership.active?'尚未测试，点击「测试连接」检查连接。':'使用期有效后可测试账号连接。'):['pending','queued','running'].includes(c.status)?'正在测试连接，请稍候…':(c.status==='success'?'连接测试通过':'连接测试未通过')+' · '+c.message+(c.observed_step!==null?' '+c.day+' 云端：'+steps(c.observed_step):'')+' · '+when(c.finished_at||c.created_at);
  hasMore=data.has_more;$('prev-page').hidden=page===0;$('next-page').hidden=!hasMore;$('page-label').textContent='第 '+(page+1)+' 页';
  const active=data.stats.active||data.runs.some(r=>['pending','queued','running'].includes(r.status));nextPoll=Date.now()+(active?3000:30000);
  $('history-update').textContent='更新于 '+when(Math.floor(Date.now()/1000))+(page===0?(active?' · 执行中每 3 秒刷新':' · 每 30 秒刷新'):' · 翻页期间暂停自动刷新');
@@ -86,5 +100,6 @@ $('prev-page').onclick=()=>action(async()=>{if(page>0)page--;await runs();});
 $('next-page').onclick=()=>action(async()=>{if(hasMore)page++;await runs();});
 $('logout').onclick=()=>action(async()=>{await api('/api/logout',{});await load();notice('已退出登录。已开启的自动计划继续执行。');});
 $('delete-account').onclick=()=>action(async()=>{if(!$('confirm-delete').checked)throw new Error('请先勾选删除确认。');await api('/api/delete',{confirm:'DELETE'});await load();notice('Zepp 凭据、设置和执行记录已删除；使用期与兑换记录保留。');});
+loadSite().catch(()=>{});
 load().catch(e=>{$('loading-panel').hidden=true;if(!state)$('login-panel').hidden=false;notice(e.message,true);});
 setInterval(async()=>{if(!state?.signed_in||busy||polling||document.hidden||page!==0||Date.now()<nextPoll)return;polling=true;try{await runs();}catch(e){$('history-update').textContent='刷新失败：'+e.message;nextPoll=Date.now()+30000;}finally{polling=false;}},1000);
