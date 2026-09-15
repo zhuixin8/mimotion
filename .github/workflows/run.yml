@@ -2,29 +2,58 @@ name: 刷步数
 
 on:
   schedule:
+    # Beijing time: 08:35, 10:35, 12:35, 14:35, 16:35, 22:35
     - cron: '35 0,2,4,6,8,14 * * *'
   workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'main.py'
+      - 'util/**'
+      - 'requirements.txt'
+      - '.github/workflows/run.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mimotion-master
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     steps:
       - name: Checkout codes
-        uses: actions/checkout@v3
-      - name: Update system and install zsh
-        run: |
-          sudo -E apt-get -qq update
-          sudo -E apt-get install zsh -y
-          
+        uses: actions/checkout@v5
+
       - name: 初始化Python
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v6
         with:
-          python-version: 3.8
-          
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt
+
       - name: 开始
         env:
-            CONFIG: ${{ secrets.CONFIG }}
+          CONFIG: ${{ secrets.CONFIG }}
+          AES_KEY: ${{ secrets.AES_KEY }}
+        run: python main.py
+
+      - name: 保存加密登录状态
+        if: ${{ !cancelled() }}
+        shell: bash
         run: |
-          pip3 install requests pytz
-          python3 main.py
+          if [ ! -f encrypted_tokens.data ]; then
+            exit 0
+          fi
+          git add -- encrypted_tokens.data
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git commit -m "Persist encrypted login tokens"
+          git push origin HEAD:master
