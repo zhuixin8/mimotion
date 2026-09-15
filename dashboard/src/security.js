@@ -42,9 +42,14 @@ export async function readText(response, limit = 1024 * 1024) {
   const all = new Uint8Array(length); let offset = 0; for (const chunk of chunks) { all.set(chunk, offset); offset += chunk.length; }
   return new TextDecoder().decode(all);
 }
-export async function fetchJSON(url, options = {}) {
+export async function fetchJSON(url, options = {}, label = '远端服务') {
   const response = await fetch(url, {...options, redirect: 'manual', signal: AbortSignal.timeout(20000)});
   const text = await readText(response);
-  let data = {}; try { data = text ? JSON.parse(text) : {}; } catch { throw new UserError('远端返回了无法识别的响应，请稍后重试。', 502); }
+  let data = {}; try { data = text ? JSON.parse(text) : {}; } catch {
+    const type = (response.headers.get('Content-Type') || '').split(';')[0].toLowerCase();
+    const kind = type === 'application/octet-stream' ? '二进制内容' : type === 'text/html' ? '网页内容' : '非 JSON 内容';
+    // Expose only the stage, status and content category, never body text or tokens.
+    throw new UserError(`${label}返回了${kind}（HTTP ${response.status}），暂时无法完成请求。`, 502);
+  }
   return {response, data};
 }

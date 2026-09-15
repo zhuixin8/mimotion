@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../dist/worker.js';
-import {seal, open, aesCBC, b64, utf8, unb64} from '../src/security.js';
+import {seal, open, aesCBC, b64, utf8, unb64, fetchJSON} from '../src/security.js';
 import {validate} from '../src/zepp.js';
 import {encryptSecret, saveConfig} from '../src/github.js';
 import nacl from 'tweetnacl';
@@ -67,9 +67,17 @@ test('Zepp 401 is actionable and never leaves a valid draft', async () => {
 });
 test('successful login obtains all credentials and stores only encrypted expiring draft', async () => {
   const env = environment(), a = await auth(env), previous = globalThis.fetch; const urls = [];
-  globalThis.fetch = async url => { urls.push(String(url));
-    if (String(url).includes('/registrations/')) return new Response('', {status: 303, headers: {Location: 'https://example.test/?access=access-private&next=1'}});
-    if (String(url).includes('/client/login')) return Response.json({result: 'ok', token_info: {login_token: 'login-private', app_token: 'app-private', user_id: '123'}});
+  globalThis.fetch = async (url, options) => { urls.push(String(url));
+    if (String(url).includes('/registrations/')) {
+      assert.equal(new Headers(options.headers).get('x-hm-ekv'), '1');
+      return new Response('', {status: 303, headers: {Location: 'https://example.test/?access=access-private&next=1'}});
+    }
+    if (String(url).includes('/client/login')) {
+      // Reproduce Zepp's actual behavior: this header changes the response to binary.
+      if (new Headers(options.headers).has('x-hm-ekv')) return new Response(new Uint8Array([248, 0, 241]), {status: 400, headers: {'Content-Type': 'application/octet-stream'}});
+      assert.ok(options.body instanceof URLSearchParams);
+      return Response.json({result: 'ok', token_info: {login_token: 'login-private', app_token: 'app-private', user_id: '123'}});
+    }
     return Response.json({items: [{deviceType: 0, deviceId: 'AA:BB'}]});
   };
   try {
@@ -79,6 +87,19 @@ test('successful login obtains all credentials and stores only encrypted expirin
     const draft = await open(stored, env.MASTER_SECRET, 'draft:test-session');
     assert.equal(draft.config.PWD, 'password-private'); assert.equal(draft.tokens['test@example.com'].bound_device_id, 'AABB'); assert.ok(draft.exp > Date.now() / 1000);
     assert.ok(urls.every(url => !url.includes('band_data')));
+  } finally { globalThis.fetch = previous; }
+});
+test('non-JSON errors identify the endpoint and status without exposing response secrets', async () => {
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => new Response('private-upstream-token', {status: 400, headers: {'Content-Type': 'application/octet-stream'}});
+  try {
+    await assert.rejects(fetchJSON('https://example.test/', {}, 'Zepp 客户端授权接口'), error => {
+      assert.match(error.message, /Zepp 客户端授权接口/);
+      assert.match(error.message, /HTTP 400/);
+      assert.match(error.message, /二进制/);
+      assert.ok(!error.message.includes('private-upstream-token'));
+      return true;
+    });
   } finally { globalThis.fetch = previous; }
 });
 test('save encrypts each secret and reports partial failure without dispatching', async () => {

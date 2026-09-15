@@ -26,7 +26,16 @@ export async function loginZepp(data) {
   const device = crypto.randomUUID(); const phone = account.startsWith('+86');
   const grant = {app_name: 'com.xiaomi.hm.health', app_version: '6.14.0', code: access, country_code: 'CN', device_id: device, device_model: phone ? 'phone' : 'android_phone', grant_type: 'access_token', third_name: phone ? 'huami_phone' : 'email'};
   if (!phone) Object.assign(grant, {'allow_registration=': 'false', lang: 'zh_CN', os_version: '1.5.0', source: 'com.xiaomi.hm.health:6.14.0:50818', dn: 'account.zepp.com,api-user.zepp.com,api-mifit.zepp.com,api-watch.zepp.com,app-analytics.zepp.com,api-analytics.huami.com,auth.zepp.com'});
-  const result = await fetchJSON('https://account.huami.com/v2/client/login', {method: 'POST', headers: {...headers, 'x-request-id': crypto.randomUUID(), cv: '50818_6.14.0', v: '2.0'}, body: new URLSearchParams(grant)});
+  // x-hm-ekv is specific to the encrypted registration request above. Forwarding
+  // it here makes this form-encoded endpoint return encrypted binary, not JSON.
+  const grantHeaders = {
+    'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    'user-agent': headers['user-agent'], 'accept-language': 'zh-CN',
+    app_name: 'com.xiaomi.hm.health', appname: 'com.xiaomi.hm.health',
+    appplatform: 'android_phone', 'x-request-id': crypto.randomUUID(),
+    cv: '50818_6.14.0', v: '2.0',
+  };
+  const result = await fetchJSON('https://account.huami.com/v2/client/login', {method: 'POST', headers: grantHeaders, body: new URLSearchParams(grant)}, 'Zepp 客户端授权接口');
   const info = result.data.token_info;
   if (!result.response.ok || result.data.result !== 'ok' || !info?.login_token || !info?.app_token || !info?.user_id) throw new UserError('Zepp 客户端授权失败，未获得完整登录凭据。', 422);
   const stamp = String(Date.now());
