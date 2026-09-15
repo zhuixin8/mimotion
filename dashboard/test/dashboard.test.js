@@ -8,8 +8,61 @@ import {loginZepp,validate} from '../src/zepp.js';
 const origin='https://mimotion.test';
 const time=()=>Math.floor(Date.now()/1000);
 const day=()=>new Date(Date.now()+28800000).toISOString().slice(0,10);
+test('registration gift is admin controlled, bounded, revision guarded and publicly described',async()=>{
+ const env=environment(),admin=await administrator(env),user=await account(env,'existing');
+ const initial=await (await api(env,'/api/zhuixins_x/site',undefined,admin)).json();assert.equal(initial.new_user_gift_days,0);
+ const data={...initial,new_user_gift_days:7};
+ assert.equal((await api(env,'/api/zhuixins_x/site',data,user)).status,401);
+ assert.equal((await worker.fetch(req('/api/zhuixins_x/site',data,admin.cookie,'invalid'),env)).status,403);
+ for(const value of [-1,0.5,3651,null,true,'7',[],{}])assert.equal((await api(env,'/api/zhuixins_x/site',{...data,new_user_gift_days:value},admin)).status,400);
+ const existing=env.db.prepare('SELECT expires_at FROM memberships WHERE account_id=?').get(user.id).expires_at;
+ assert.equal((await api(env,'/api/zhuixins_x/site',data,admin)).status,200);
+ assert.equal((await (await api(env,'/api/site')).json()).new_user_gift_days,7);
+ assert.equal((await api(env,'/api/zhuixins_x/site',{...data,new_user_gift_days:30},admin)).status,409);
+ const {new_user_gift_days,...legacy}=data;
+ assert.equal((await api(env,'/api/zhuixins_x/site',{...legacy,revision:2},admin)).status,200);
+ assert.equal((await (await api(env,'/api/site')).json()).new_user_gift_days,7);
+ assert.equal(env.db.prepare('SELECT expires_at FROM memberships WHERE account_id=?').get(user.id).expires_at,existing);
+ const event=env.db.prepare("SELECT details FROM admin_audit WHERE action='site_update' LIMIT 1").get();assert.equal(JSON.parse(event.details).new_user_gift_days,7);
+ assert.equal((await api(env,'/api/zhuixins_x/site',{...data,revision:3,new_user_gift_days:3650},admin)).status,200);
+ assert.equal((await api(env,'/api/zhuixins_x/site',{...data,revision:4,new_user_gift_days:0},admin)).status,200);
+});
+test('verified registration earns one gift across concurrent login, renewal and profile restoration',async(t)=>{
+ const env=environment();const mock=zeppMock(t);env.db.prepare('UPDATE site_settings SET new_user_gift_days=3').run();
+ const input={account:'gift@example.com',password:'dummy',consent:true,min_step:1000,max_step:2000};
+ const responses=await Promise.all([api(env,'/api/login',input),api(env,'/api/login',input)]);assert.ok(responses.every(r=>r.status===200));
+ let member=env.db.prepare('SELECT * FROM memberships').get();assert.equal(member.registration_gift_days,3);assert.equal(member.expires_at,member.created_at+3*86400);
+ assert.equal(env.db.prepare("SELECT COUNT(*) n FROM admin_audit WHERE action='registration_gift'").get().n,1);
+ assert.ok(env.sent.length>0);assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,0);
+ const res=await api(env,'/api/login',input),cookie=res.headers.get('set-cookie').split(';')[0];
+ const status=await (await api(env,'/api/status',undefined,{cookie})).json();assert.equal(status.account.membership.active,true);
+ const admin=await administrator(env),[code]=await activation(env,admin,7),a={cookie,csrf:status.csrf};
+ assert.equal((await api(env,'/api/redeem',{code:code.code},a)).status,200);
+ const renewed=env.db.prepare('SELECT expires_at FROM memberships').get().expires_at;assert.equal(renewed,member.expires_at+7*86400);
+ env.db.prepare('DELETE FROM accounts').run();env.db.prepare('UPDATE site_settings SET registration_open=0,new_user_gift_days=30').run();
+ assert.equal((await api(env,'/api/login',input)).status,200);member=env.db.prepare('SELECT * FROM memberships').get();
+ assert.equal(member.expires_at,renewed);assert.equal(member.registration_gift_days,3);assert.equal(env.db.prepare("SELECT COUNT(*) n FROM admin_audit WHERE action='registration_gift'").get().n,1);
+});
+test('zero-day registration cannot claim later policy gifts and rejected admission receives nothing',async(t)=>{
+ const env=environment();zeppMock(t);const input={account:'zero@example.com',password:'dummy',consent:true,min_step:1,max_step:2};
+ env.db.prepare('UPDATE site_settings SET registration_open=0,new_user_gift_days=7').run();
+ assert.equal((await api(env,'/api/login',input)).status,409);assert.equal(env.db.prepare('SELECT COUNT(*) n FROM memberships').get().n,0);
+ env.db.prepare('UPDATE site_settings SET registration_open=1,new_user_gift_days=0').run();assert.equal((await api(env,'/api/login',input)).status,200);
+ env.db.prepare('UPDATE site_settings SET new_user_gift_days=7').run();env.db.prepare('DELETE FROM accounts').run();assert.equal((await api(env,'/api/login',input)).status,200);
+ const member=env.db.prepare('SELECT * FROM memberships').get();assert.equal(member.expires_at,0);assert.equal(member.registration_gift_days,0);
+ assert.equal(env.db.prepare("SELECT COUNT(*) n FROM admin_audit WHERE action='registration_gift'").get().n,0);
+});
+test('registration gift audit failure rolls back the grant; retry credits once',async(t)=>{
+ const env=environment();zeppMock(t);env.db.prepare('UPDATE site_settings SET new_user_gift_days=7').run();
+ env.db.exec("CREATE TRIGGER fail_gift BEFORE INSERT ON admin_audit WHEN NEW.action='registration_gift' BEGIN SELECT RAISE(ABORT,'injected audit failure'); END;");
+ const input={account:'retry@example.com',password:'dummy',consent:true,min_step:1,max_step:2};
+ assert.equal((await api(env,'/api/login',input)).status,503);assert.equal(env.db.prepare('SELECT COUNT(*) n FROM memberships').get().n,0);
+ env.db.exec('DROP TRIGGER fail_gift');assert.equal((await api(env,'/api/login',input)).status,200);
+ const member=env.db.prepare('SELECT * FROM memberships').get();assert.equal(member.expires_at-member.created_at,7*86400);
+ assert.equal(env.db.prepare("SELECT COUNT(*) n FROM admin_audit WHERE action='registration_gift'").get().n,1);
+});
 function environment(){
- const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');for(const file of ['0001_multiuser.sql','0002_delivery.sql','0003_verification.sql','0004_saas.sql','0005_operations.sql','0006_reliability.sql'])db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
+ const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');for(const file of ['0001_multiuser.sql','0002_delivery.sql','0003_verification.sql','0004_saas.sql','0005_operations.sql','0006_reliability.sql','0007_registration_gift.sql'])db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
  const env={APP_ORIGIN:origin,MASTER_SECRET:'test-secret-only',MAX_ACCOUNTS:'200',db,sent:[],queries:0};
  function statement(sql,args=[]){return {bind(...v){return statement(sql,v);},async first(){env.queries++;return db.prepare(sql).get(...args)||null;},async all(){env.queries++;return {results:db.prepare(sql).all(...args)};},async run(){env.queries++;const r=db.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}};}};}
  env.DB={prepare:sql=>statement(sql),batch:async statements=>{db.exec('BEGIN');try{const r=await Promise.all(statements.map(s=>s.run()));db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}};
@@ -186,7 +239,7 @@ test('migration grants existing accounts exactly seven days and does not create 
 
 test('site settings require administrator, validate input and prevent stale overwrites',async()=>{
  const env=environment(),a=await account(env,'A'),admin=await administrator(env);
- const initial=await (await api(env,'/api/site')).json();assert.equal(initial.registration_open,true);assert.deepEqual(Object.keys(initial).sort(),['announcement','contact','name','registration_open']);
+ const initial=await (await api(env,'/api/site')).json();assert.equal(initial.registration_open,true);assert.deepEqual(Object.keys(initial).sort(),['announcement','contact','name','new_user_gift_days','registration_open']);
  const data={name:'My site',announcement:'<img src=x onerror=alert(1)>',contact:'support@example.test',registration_open:false,revision:1};
  assert.equal((await api(env,'/api/zhuixins_x/site',data,a)).status,401);
  assert.equal((await api(env,'/api/zhuixins_x/site',data,{...admin,csrf:'wrong'})).status,403);

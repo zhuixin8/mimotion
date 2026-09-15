@@ -21,7 +21,9 @@ export async function adminOperations(req,env,url,data){
  if(path==='site'&&req.method==='POST'){
   const name=str(data.name,40,true),announcement=str(data.announcement,500),contact=str(data.contact,150),revision=integer(data.revision);
   if(typeof data.registration_open!=='boolean')throw new UserError('请选择是否开放注册。');
-  const r=await query(env,'UPDATE site_settings SET name=?,announcement=?,contact=?,registration_open=?,revision=revision+1,updated_at=? WHERE id=1 AND revision=?',name,announcement,contact,Number(data.registration_open),seconds(),revision).run();
+  const gift=data.new_user_gift_days;
+  if(gift!==undefined&&(typeof gift!=='number'||!Number.isSafeInteger(gift)||gift<0||gift>3650))throw new UserError('新用户赠送天数须为 0–3650 的整数。');
+  const r=await query(env,'UPDATE site_settings SET name=?,announcement=?,contact=?,registration_open=?,new_user_gift_days=COALESCE(?,new_user_gift_days),revision=revision+1,updated_at=? WHERE id=1 AND revision=?',name,announcement,contact,Number(data.registration_open),gift??null,seconds(),revision).run();
   if(!r.meta.changes)throw new UserError('站点设置已被更新，请刷新后重试。',409);
   return Response.json({ok:true,settings:await siteSettings(env)});
  }

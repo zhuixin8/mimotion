@@ -13,6 +13,7 @@ import {publicSite} from './site.js';
 import {membership,requireMembership,redeem,licenseHistory} from './licensing.js';
 import {adminRoute} from './admin.js';
 import adminHtml from './admin.html';
+import adminCss from './admin.css';
 import adminClient from './admin-client.js.txt';
 
 const COOKIE = '__Host-mimotion-user-v2';
@@ -45,7 +46,7 @@ async function route(request, env) {
   if (!['GET','POST'].includes(request.method)) throw new UserError('不支持的请求。', 405);
   if (request.method === 'GET') {
     if (Object.hasOwn(guideImages,path)) return new Response(guideImages[path],{headers:{'content-type':'image/svg+xml; charset=utf-8'}});
-    const assets = {'/help':[helpHtml,'text/html'],'/help/':[helpHtml,'text/html'],'/help.css':[helpCss,'text/css'],'/help.js':[helpJs,'text/javascript'],'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/zhuixins_x':[adminHtml,'text/html'], '/zhuixins_x/':[adminHtml,'text/html'], '/zhuixins_x/app.js':[adminClient,'text/javascript']};
+    const assets = {'/help':[helpHtml,'text/html'],'/help/':[helpHtml,'text/html'],'/help.css':[helpCss,'text/css'],'/help.js':[helpJs,'text/javascript'],'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/zhuixins_x':[adminHtml,'text/html'], '/zhuixins_x/':[adminHtml,'text/html'], '/zhuixins_x/style.css':[adminCss,'text/css'], '/zhuixins_x/app.js':[adminClient,'text/javascript']};
     if (assets[path]) return new Response(assets[path][0], {headers:{'content-type':assets[path][1]+'; charset=utf-8'}});
     if (path === '/api/site') return json(await publicSite(env));
     if (path === '/favicon.ico') return new Response(null,{status:204});

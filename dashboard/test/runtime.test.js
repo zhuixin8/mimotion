@@ -24,6 +24,11 @@ test('workerd + D1 + queue: actual delivery, durable delayed checks and duplicat
   for(const name of readdirSync(new URL('../migrations/',import.meta.url)).filter(n=>n.endsWith('.sql')).sort())schema.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   for(const {sql} of schema.prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid").all())await db.prepare(sql).run();
   schema.close();
+  await db.prepare('INSERT INTO site_settings(id,updated_at,new_user_gift_days) VALUES(1,?,7)').bind(now).run();
+  await db.prepare('INSERT INTO memberships(account_id,created_at,updated_at) VALUES(?,?,?) ON CONFLICT(account_id) DO NOTHING').bind('gift-test',now,now).run();
+  await db.prepare('INSERT INTO memberships(account_id,created_at,updated_at) VALUES(?,?,?) ON CONFLICT(account_id) DO NOTHING').bind('gift-test',now+10,now+10).run();
+  const gifted=await db.prepare("SELECT * FROM memberships WHERE account_id='gift-test'").first();assert.equal(gifted.expires_at,now+7*86400);assert.equal(gifted.registration_gift_days,7);
+  assert.equal((await db.prepare("SELECT COUNT(*) n FROM admin_audit WHERE action='registration_gift'").first()).n,1);
   await db.prepare('INSERT INTO accounts(id,label,credentials,enabled,session_version,created_at,updated_at) VALUES(?,?,?,0,?,?,?)').bind('A','test',await seal({user_id:'A',login_token:'test'},'runtime-test-only','zepp:A'),'v',now,now).run();
   await db.prepare('INSERT INTO memberships(account_id,expires_at,created_at,updated_at) VALUES(?,?,?,?)').bind('A',now+86400,now,now).run();
   await db.prepare("INSERT INTO runs(id,account_id,slot,kind,day,step,status,created_at,updated_at) VALUES('r','A','r','manual',?,20000,'queued',?,?)").bind(day,now,now).run();

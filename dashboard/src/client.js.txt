@@ -33,7 +33,7 @@ async function loadSite(){
  const site=await api('/api/site');document.querySelectorAll('[data-site-name]').forEach(e=>e.textContent=site.name);document.title=site.name+' · 我的控制台';document.querySelector('.brand').setAttribute('aria-label',site.name+' 首页');
  $('site-announcement').hidden=!site.announcement;$('announcement-text').textContent=site.announcement;
  $('site-contact').hidden=!site.contact;$('site-contact').textContent='客服：'+site.contact;
- $('registration-message').textContent=site.registration_open?'首次登录将自动创建本站账号。':'新用户注册已暂停，已有账号仍可登录。';
+ $('registration-message').textContent=site.registration_open?(site.new_user_gift_days>0?'首次注册自动赠送 '+site.new_user_gift_days+' 天使用期。':'首次登录将自动创建本站账号。'):'新用户注册已暂停，已有账号仍可登录。';
 }
 function renderRuntime(runtime){
  const status={pending:'等待排队',queued:'排队中',running:'执行中',success:'接口已接收',failed:'执行失败',unknown:'结果待确认',skipped:'已跳过'};
