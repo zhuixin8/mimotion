@@ -18,8 +18,9 @@
     }
   },
   "vars": {
-    "APP_ORIGIN": "https://mimotion-dashboard.113618446.workers.dev",
-    "MAX_ACCOUNTS": "200"
+    "APP_ORIGIN": "https://s.dqai.cc",
+    "MAX_ACCOUNTS": "200",
+    "LEGACY_ORIGIN": "https://mimotion-dashboard.113618446.workers.dev"
   },
   "build": {
     "command": "npm run build"
@@ -53,5 +54,11 @@
     "crons": [
       "*/5 * * * *"
     ]
-  }
+  },
+  "routes": [
+    {
+      "pattern": "s.dqai.cc",
+      "custom_domain": true
+    }
+  ]
 }

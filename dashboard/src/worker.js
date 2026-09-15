@@ -29,7 +29,13 @@ async function session(request, env) {
 const publicAccount = (a,access) => ({id:a.id,label:a.label,min_step:a.min_step,max_step:a.max_step,enabled:!!a.enabled,needs_login:!!a.needs_login,membership:access});
 async function route(request, env) {
   const url = new URL(request.url), path = url.pathname;
-  if (url.origin !== env.APP_ORIGIN) throw new UserError('访问地址不正确。', 403);
+  if (url.origin !== env.APP_ORIGIN) {
+    // Redirect only navigation from the configured old host; never forward credentials.
+    if (url.origin === env.LEGACY_ORIGIN && request.method === 'GET' && ['/', '/setup', '/admin', '/admin/'].includes(path)) {
+      return new Response(null, {status:302, headers:{Location:env.APP_ORIGIN + path}});
+    }
+    throw new UserError('访问地址不正确。', 403);
+  }
   if (!['GET','POST'].includes(request.method)) throw new UserError('不支持的请求。', 405);
   if (request.method === 'GET') {
     const assets = {'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/admin':[adminHtml,'text/html'], '/admin/':[adminHtml,'text/html'], '/admin.js':[adminClient,'text/javascript']};

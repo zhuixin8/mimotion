@@ -1,5 +1,9 @@
 # MiMotion 多用户网页版
 
+线上用户入口：https://s.dqai.cc/ ，管理后台：https://s.dqai.cc/admin 。
+
+通过 Wrangler Custom Domain 绑定 `s.dqai.cc`，Cloudflare 自动管理 DNS 和 HTTPS 证书。旧 workers.dev 地址的首页与后台入口跳转至新域名；更换域名后需重新登录。`APP_ORIGIN` 是唯一允许的应用及 POST 来源，`LEGACY_ORIGIN` 仅用于页面跳转。
+
 直接用 Zepp Life 邮箱/手机号及密码登录，首次成功自动创建本站账号，不需要 GitHub 账号或邀请码。网站不会创建 Zepp 官方账号。
 
 ## SaaS 使用期与管理后台
