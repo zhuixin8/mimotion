@@ -79,13 +79,13 @@ $('enabled').addEventListener('change',renderSchedule);
 async function licenses(){const d=await api('/api/license');syncAccess(d.membership);const box=$('redemption-list');box.replaceChildren();if(!d.redemptions.length)box.textContent='暂无激活码兑换记录。';for(const r of d.redemptions){const item=element('div',undefined,'run');item.textContent=r.hint+' · '+r.duration_days+' 天 · '+when(r.created_at)+' · 兑换后到期 '+when(r.new_expiry);box.append(item);}}
 const errorLabels={network_timeout:'连接超时',rate_limited:'请求受限',upstream_unavailable:'远端服务暂时不可用',response_format:'接口响应格式变化',execution_interrupted:'执行中断',delivery_exhausted:'投递恢复次数已用尽',delivery_delayed:'队列处理延迟',submission_uncertain:'提交结果待确认',credentials_expired:'登录凭据过期',execution_failed:'执行异常'};
 const verifyLabels={waiting:'等待云端同步，将自动只读核对',checking:'正在读回核对',not_checked:'尚未核对',matched:'云端步数已达到目标',below_target:'云端步数暂未达到目标，可稍后核对',unavailable:'暂未读回步数，效果尚未核实',readable:'当天步数可读取'};
-function notice(text,error=false){$('notice').textContent=text;$('notice').className='notice '+(error?'error':'success');$('notice').hidden=!text;}
+const notice=createNotice($('notice'));
 async function api(path,data){
  const response=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json','X-CSRF-Token':state?.csrf||''},body:data===undefined?undefined:JSON.stringify(data),credentials:'same-origin'});
  let result;try{result=await response.json();}catch{throw new Error('网站暂时没有返回有效响应，请刷新后重试。');}
  if(!response.ok)throw new Error(result.error||'请求失败，请重试。');return result;
 }
-async function action(fn){if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){notice(e.message,true);}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);syncAccess();}}
+async function action(fn){if(busy)return;busy=true;document.querySelectorAll('button:not(.notice-close)').forEach(b=>b.disabled=true);try{await fn();}catch(e){notice(e.message,true);}finally{busy=false;document.querySelectorAll('button:not(.notice-close)').forEach(b=>b.disabled=false);syncAccess();}}
 function resetHistory(){page=0;$('filter-status').value='all';$('filter-day').value='';}
 function updateStepRecommendation(){
  const high=['min-step','max-step'].some(id=>Number($(id).value)>50000);
@@ -139,7 +139,7 @@ function checkNotice(check){
  if(state==='inactive')return '使用期有效后可测试连接。';
  return '暂时无法确认测试任务状态，可稍后查看记录或点击「测试连接」。';
 }
-$('login-form').onsubmit=e=>{e.preventDefault();action(async()=>{const data={account:$('account').value,password:$('password').value,min_step:18000,max_step:25000,consent:$('consent').checked};$('password').value='';notice('正在验证 Zepp Life，请稍候…');const login=await api('/api/login',data);resetHistory();currentView='overview';await load();if(!state.account.membership.active)showView('membership');notice(state.account.membership.active?'登录成功。'+checkNotice(login.check):state.account.membership.suspended?'登录成功，账号已停用，请联系管理员。':'登录成功，请先兑换激活码开通使用期。');});};
+$('login-form').onsubmit=e=>{e.preventDefault();action(async()=>{const data={account:$('account').value,password:$('password').value,min_step:18000,max_step:25000,consent:$('consent').checked};$('password').value='';notice('正在验证 Zepp Life，请稍候…',false,{duration:0});const login=await api('/api/login',data);resetHistory();currentView='overview';await load();if(!state.account.membership.active)showView('membership');notice(state.account.membership.active?'登录成功。'+checkNotice(login.check):state.account.membership.suspended?'登录成功，账号已停用，请联系管理员。':'登录成功，请先兑换激活码开通使用期。');});};
 $('settings-form').onsubmit=e=>{e.preventDefault();action(async()=>{await api('/api/settings',{min_step:$('min-step').value,max_step:$('max-step').value,enabled:$('enabled').checked});await load();notice('计划已保存。');});};
 $('redeem-form').onsubmit=e=>{e.preventDefault();action(async()=>{const code=$('activation-code').value;const r=await api('/api/redeem',{code});$('activation-code').value='';await load();notice(r.already_redeemed?'此码此前已兑换，期限没有重复增加。':'激活成功，已增加 '+r.receipt.duration_days+' 天使用期；到期时间：'+when(r.membership.expires_at)+'。');});};
 $('test-connection').onclick=()=>action(async()=>{const result=await api('/api/check',{});resetHistory();await runs();notice(checkNotice(result.check));});

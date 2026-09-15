@@ -6,6 +6,7 @@ import html from './index.html';
 import {brandIconBase64} from './brand-icon.js';
 import css from './style.css';
 import client from './client.js.txt';
+import notices from './notices.js.txt';
 import {random, equal, seal, open, UserError, readText, utf8, b64} from './security.js';
 import {loginZepp, validate} from './zepp.js';
 import {query, limit, seconds, enqueue, scheduled, consume} from './jobs.js';
@@ -50,7 +51,7 @@ async function route(request, env) {
   if (request.method === 'GET') {
     if (path === '/brand-icon-v1.webp' || path === '/favicon.ico') return new Response(Uint8Array.from(atob(brandIconBase64),c=>c.charCodeAt(0)),{headers:{'content-type':'image/webp'}});
     if (Object.hasOwn(guideImages,path)) return new Response(guideImages[path],{headers:{'content-type':'image/svg+xml; charset=utf-8'}});
-    const assets = {'/help':[helpHtml,'text/html'],'/help/':[helpHtml,'text/html'],'/help.css':[helpCss,'text/css'],'/help.js':[helpJs,'text/javascript'],'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/zhuixins_x':[adminHtml,'text/html'], '/zhuixins_x/':[adminHtml,'text/html'], '/zhuixins_x/style.css':[adminCss,'text/css'], '/zhuixins_x/app.js':[adminClient,'text/javascript']};
+    const assets = {'/notices-v1.js':[notices,'text/javascript'],'/help':[helpHtml,'text/html'],'/help/':[helpHtml,'text/html'],'/help.css':[helpCss,'text/css'],'/help.js':[helpJs,'text/javascript'],'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/zhuixins_x':[adminHtml,'text/html'], '/zhuixins_x/':[adminHtml,'text/html'], '/zhuixins_x/style.css':[adminCss,'text/css'], '/zhuixins_x/app.js':[adminClient,'text/javascript']};
     if (assets[path]) return new Response(assets[path][0], {headers:{'content-type':assets[path][1]+'; charset=utf-8'}});
     if (path === '/api/site') return json(await publicSite(env));
 

@@ -1,0 +1,27 @@
+// Shared transient feedback for the user console and administrator console.
+function createNotice(box){
+ let timer=null,remaining=0,startedAt=0,hovered=false;
+ const message=document.createElement('span');message.className='notice-message';
+ const close=document.createElement('button');close.type='button';close.className='notice-close';
+ close.setAttribute('aria-label','关闭提示');close.textContent='×';
+ box.classList.add('notice-dismissible');box.replaceChildren(message,close);
+ function stop(){if(timer!==null){clearTimeout(timer);timer=null;remaining=Math.max(0,remaining-(performance.now()-startedAt));}}
+ function dismiss(){stop();remaining=0;box.hidden=true;message.textContent='';}
+ function resume(){
+  if(timer!==null||box.hidden||remaining<=0||hovered||document.hidden||box.contains(document.activeElement))return;
+  startedAt=performance.now();timer=setTimeout(dismiss,remaining);
+ }
+ close.onclick=dismiss;
+ box.addEventListener('pointerenter',()=>{hovered=true;stop();});
+ box.addEventListener('pointerleave',()=>{hovered=false;resume();});
+ box.addEventListener('focusin',stop);
+ box.addEventListener('focusout',()=>setTimeout(resume,0));
+ document.addEventListener('visibilitychange',()=>document.hidden?stop():resume());
+ return (text,error=false,{duration=error?10000:4000}={})=>{
+  stop();remaining=0;if(!text){dismiss();return;}
+  box.classList.toggle('error',error);box.classList.toggle('success',!error&&duration!==0);
+  box.setAttribute('role',error?'alert':'status');box.setAttribute('aria-live',error?'assertive':'polite');
+  message.textContent=text;box.hidden=false;close.disabled=false;
+  remaining=duration;hovered=box.matches(':hover');resume();
+ };
+}
