@@ -33,3 +33,5 @@
 .user-app .help-link{margin-left:auto;flex-shrink:0;font-size:12px;color:#60789e;padding:7px 0;text-decoration:none}.user-app .help-link:hover{color:#2854de;text-decoration:underline}.user-app .header-user{margin-left:0}.user-app .guide-nav{text-decoration:none}.user-app .guide-nav:hover{background:#f0f4fc}@media(max-width:650px){.user-app .brand [data-site-name]{max-width:105px}.user-app .header-user #account-label{max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-app .help-link{font-size:11px}.user-app .app-sidebar nav{gap:3px}.user-app .nav-item{font-size:11px;padding-left:3px;padding-right:3px}}
 .user-app .header-user #account-label{overflow:hidden;text-overflow:ellipsis}@media(max-width:650px){.user-app .app-header{padding:0 16px;gap:8px}.user-app .header-user #account-label{max-width:50px}}
 .user-app .brand-symbol{font-size:18px;font-weight:600}
+
+.user-app .step-recommendation{margin:14px 0 0;padding:10px 12px;border:1px solid #dce5f4;border-radius:7px;background:#f5f8fd;color:#465e80;font-size:13px;line-height:1.7}.user-app .step-recommendation.is-high{background:#fff7e8;border-color:#efd29e;color:#85550d}
