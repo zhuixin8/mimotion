@@ -27,5 +27,5 @@ export async function history(env, accountId, url) {
   const account=await query(env,'SELECT id,enabled,needs_login,min_step,max_step FROM accounts WHERE id=?',accountId).first();
   const latest=await query(env,"SELECT id,kind,status,verification,step,created_at,finished_at,message FROM runs WHERE account_id=? AND kind IN ('manual','schedule') ORDER BY created_at DESC,id DESC LIMIT 1",accountId).first();
   const reading=await query(env,'SELECT day,observed_step,checked_at FROM runs WHERE account_id=? AND observed_step IS NOT NULL AND checked_at IS NOT NULL ORDER BY checked_at DESC,id DESC LIMIT 1',accountId).first();
-  return {runs:results.slice(0,30),page,has_more:results.length>30,stats,check,membership:access,runtime:{latest,reading,plan:account?{enabled:!!account.enabled,needs_login:!!account.needs_login,min_step:account.min_step,max_step:account.max_step}:null,next:nextExecution(account,access)}};
+  return {runs:results.slice(0,30),page,has_more:results.length>30,stats,check,membership:access,runtime:{now:Math.floor(Date.now()/1000),latest,reading,plan:account?{enabled:!!account.enabled,needs_login:!!account.needs_login,min_step:account.min_step,max_step:account.max_step}:null,next:nextExecution(account,access)}};
 }

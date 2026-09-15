@@ -19,3 +19,5 @@
 @media(prefers-reduced-motion:reduce){.admin-app *{transition:none!important;scroll-behavior:auto!important}}
 
 .admin-app .brand-mark{font-size:18px;font-weight:600}.admin-app .login-emblem{font-size:24px;font-weight:600}
+
+.brand-image{display:block;object-fit:cover;flex-shrink:0;border-radius:9px}

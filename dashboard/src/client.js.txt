@@ -7,6 +7,7 @@ function showView(view,focus=false){
  document.querySelectorAll('.nav-item').forEach(b=>{if(b.dataset.view===currentView)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
  $('view-title').textContent=views[currentView][0];$('view-description').textContent=views[currentView][1];
  if(focus)$('view-title').focus({preventScroll:true});
+ if(currentView==='plan')renderSchedule();
 }
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>showView(b.dataset.view,true));
 const when=t=>t?new Date(t*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';
@@ -35,7 +36,9 @@ async function loadSite(){
  $('site-contact').hidden=!site.contact;$('site-contact').textContent='客服：'+site.contact;
  $('registration-message').textContent=site.registration_open?(site.new_user_gift_days>0?'首次注册自动赠送 '+site.new_user_gift_days+' 天使用期。':'首次登录将自动创建本站账号。'):'新用户注册已暂停，已有账号仍可登录。';
 }
+let scheduleRuntime=null,scheduleReceivedAt=0;
 function renderRuntime(runtime){
+ scheduleRuntime=runtime;scheduleReceivedAt=Date.now();renderSchedule();
  const status={pending:'等待排队',queued:'排队中',running:'执行中',success:'接口已接收',failed:'执行失败',unknown:'结果待确认',skipped:'已跳过'};
  const r=runtime.latest;$('runtime-latest').textContent=r?(r.verification==='matched'?'云端达到目标':status[r.status]||r.status):'尚未执行';
  $('runtime-latest-time').textContent=r?when(r.finished_at||r.created_at)+' · '+(r.kind==='manual'?'手动':'自动'):'可先测试连接，再执行一次';
@@ -43,6 +46,36 @@ function renderRuntime(runtime){
  $('runtime-reading').textContent=runtime.reading?steps(runtime.reading.observed_step):'尚未读取';
  $('runtime-reading-time').textContent=runtime.reading?'数据日期 '+runtime.reading.day+' · 读取于 '+when(runtime.reading.checked_at):'测试连接后显示云端读数';
 }
+function renderSchedule(){
+ if(!state?.signed_in||!scheduleRuntime)return;
+ const now=scheduleRuntime.now? scheduleRuntime.now*1000+(Date.now()-scheduleReceivedAt):Date.now();
+ const a=state.account,access=a.membership,next=scheduleRuntime.next;
+ const reason=access.suspended?'账号已停用':!access.active||access.expires_at*1000<=now?'请先激活或续期':a.needs_login?'凭据失效，请重新登录':!a.enabled?'自动计划已暂停':!next.at?next.reason:'';
+ const active=!reason,stale=Date.now()-scheduleReceivedAt>90000;
+ const due=active&&next.at*1000<=now;
+ const ticking=active&&!due&&!stale;
+ const local=new Date(now+28800000),day=local.toISOString().slice(0,10);
+ const nextLocal=next.at?new Date(next.at*1000+28800000):null;
+ const nextDay=nextLocal?.toISOString().slice(0,10),nextTime=nextLocal?.toISOString().slice(11,16);
+ $('schedule-card').classList.toggle('is-counting',ticking);
+ $('schedule-badge').textContent=reason?(a.enabled?'暂不可执行':'已暂停'):stale?'待刷新':due?'已到计划时间':'已开启';
+ $('schedule-badge').classList.toggle('is-active',ticking);
+ $('schedule-heading').textContent=reason?'当前计划状态':'下一次预计排队';
+ $('schedule-time').textContent=reason?'暂无安排':nextTime;
+ $('schedule-day').textContent=active?(nextDay===day?'今天':'明天'):'';
+ const remaining=Math.max(0,Math.ceil((next.at*1000-now)/1000)),h=Math.floor(remaining/3600),m=Math.floor(remaining%3600/60),s=remaining%60;
+ $('schedule-countdown').textContent=reason|| (stale?'状态待刷新，请查看最新执行记录':due?'已到计划时间，等待状态更新':'还有 '+(h?h+' 小时 ':'')+String(m).padStart(2,'0')+' 分 '+String(s).padStart(2,'0')+' 秒');
+ $('schedule-reason').textContent=reason?'开启自动执行并保存，且使用期有效时，才会按计划运行。':next.reason;
+ $('schedule-draft').hidden=$('enabled').checked===!!a.enabled;
+ const dayStart=Date.parse(day+'T00:00:00+08:00');
+ document.querySelectorAll('.schedule-slot').forEach(slot=>{
+  const [hour,minute]=slot.dataset.time.split(':').map(Number),at=dayStart+(hour*60+minute)*60000;
+  const isNext=ticking&&nextDay===day&&slot.dataset.time===nextTime;
+  slot.dataset.phase=isNext?'next':reason?'paused':at<=now?'past':'later';
+  slot.querySelector('small').textContent=isNext?'下一次':reason?'未安排':at<=now?'时间已过':'待执行';
+ });
+}
+$('enabled').addEventListener('change',renderSchedule);
 async function licenses(){const d=await api('/api/license');syncAccess(d.membership);const box=$('redemption-list');box.replaceChildren();if(!d.redemptions.length)box.textContent='暂无激活码兑换记录。';for(const r of d.redemptions){const item=element('div',undefined,'run');item.textContent=r.hint+' · '+r.duration_days+' 天 · '+when(r.created_at)+' · 兑换后到期 '+when(r.new_expiry);box.append(item);}}
 const errorLabels={network_timeout:'连接超时',rate_limited:'请求受限',upstream_unavailable:'远端服务暂时不可用',response_format:'接口响应格式变化',execution_interrupted:'执行中断',delivery_exhausted:'投递恢复次数已用尽',delivery_delayed:'队列处理延迟',submission_uncertain:'提交结果待确认',credentials_expired:'登录凭据过期',execution_failed:'执行异常'};
 const verifyLabels={waiting:'等待云端同步，将自动只读核对',checking:'正在读回核对',not_checked:'尚未核对',matched:'云端步数已达到目标',below_target:'云端步数暂未达到目标，可稍后核对',unavailable:'暂未读回步数，效果尚未核实',readable:'当天步数可读取'};
@@ -120,4 +153,4 @@ $('logout').onclick=()=>action(async()=>{await api('/api/logout',{});await load(
 $('delete-account').onclick=()=>action(async()=>{if(!$('confirm-delete').checked)throw new Error('请先勾选删除确认。');await api('/api/delete',{confirm:'DELETE'});await load();notice('Zepp 凭据、设置和执行记录已删除；使用期与兑换记录保留。');});
 loadSite().catch(()=>{});
 load().catch(e=>{$('loading-panel').hidden=true;if(!state)$('login-panel').hidden=false;notice(e.message,true);});
-setInterval(async()=>{if(!state?.signed_in||busy||polling||document.hidden||page!==0||Date.now()<nextPoll)return;polling=true;try{await runs();}catch(e){$('history-update').textContent='刷新失败：'+e.message;nextPoll=Date.now()+30000;}finally{polling=false;}},1000);
+setInterval(async()=>{if(state?.signed_in&&currentView==='plan'&&!document.hidden)renderSchedule();if(!state?.signed_in||busy||polling||document.hidden||page!==0||Date.now()<nextPoll)return;polling=true;try{await runs();}catch(e){$('history-update').textContent='刷新失败：'+e.message;nextPoll=Date.now()+30000;}finally{polling=false;}},1000);
