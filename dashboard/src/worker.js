@@ -1,3 +1,7 @@
+import helpHtml from './help.html';
+import helpCss from './help.css';
+import helpJs from './help.js.txt';
+import {guideImages} from './guide-images.js';
 import html from './index.html';
 import css from './style.css';
 import client from './client.js.txt';
@@ -32,7 +36,7 @@ async function route(request, env) {
   const url = new URL(request.url), path = url.pathname;
   if (url.origin !== env.APP_ORIGIN) {
     // Redirect only navigation from the configured old host; never forward credentials.
-    if (url.origin === env.LEGACY_ORIGIN && request.method === 'GET' && ['/', '/setup', '/zhuixins_x', '/zhuixins_x/'].includes(path)) {
+    if (url.origin === env.LEGACY_ORIGIN && request.method === 'GET' && ['/', '/setup', '/help', '/help/', '/zhuixins_x', '/zhuixins_x/'].includes(path)) {
       return new Response(null, {status:302, headers:{Location:env.APP_ORIGIN + path}});
     }
     throw new UserError('访问地址不正确。', 403);
@@ -40,7 +44,8 @@ async function route(request, env) {
   if (['/admin','/admin/','/admin.js'].includes(path) || path.startsWith('/api/admin/')) throw new UserError('页面不存在。',404);
   if (!['GET','POST'].includes(request.method)) throw new UserError('不支持的请求。', 405);
   if (request.method === 'GET') {
-    const assets = {'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/zhuixins_x':[adminHtml,'text/html'], '/zhuixins_x/':[adminHtml,'text/html'], '/zhuixins_x/app.js':[adminClient,'text/javascript']};
+    if (Object.hasOwn(guideImages,path)) return new Response(guideImages[path],{headers:{'content-type':'image/svg+xml; charset=utf-8'}});
+    const assets = {'/help':[helpHtml,'text/html'],'/help/':[helpHtml,'text/html'],'/help.css':[helpCss,'text/css'],'/help.js':[helpJs,'text/javascript'],'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/zhuixins_x':[adminHtml,'text/html'], '/zhuixins_x/':[adminHtml,'text/html'], '/zhuixins_x/app.js':[adminClient,'text/javascript']};
     if (assets[path]) return new Response(assets[path][0], {headers:{'content-type':assets[path][1]+'; charset=utf-8'}});
     if (path === '/api/site') return json(await publicSite(env));
     if (path === '/favicon.ico') return new Response(null,{status:204});

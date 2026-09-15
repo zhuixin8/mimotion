@@ -29,3 +29,6 @@
 @media(max-width:650px){.runtime-grid{grid-template-columns:1fr;gap:17px}.runtime-grid>div+div{border-top:1px solid #edf0f6;padding-top:17px}.runtime-grid strong{font-size:15px}.user-app [data-site-name]{max-width:160px}.user-detail{padding:17px}.admin-tabs button{min-width:0}.user-app .runtime-card{margin-bottom:16px}}
 
 @media(max-width:650px){.user-app .brand{min-width:0}.user-app .brand [data-site-name]{max-width:105px}.user-app .header-user{flex-shrink:0}}
+
+.user-app .help-link{margin-left:auto;flex-shrink:0;font-size:12px;color:#60789e;padding:7px 0;text-decoration:none}.user-app .help-link:hover{color:#2854de;text-decoration:underline}.user-app .header-user{margin-left:0}.user-app .guide-nav{text-decoration:none}.user-app .guide-nav:hover{background:#f0f4fc}@media(max-width:650px){.user-app .brand [data-site-name]{max-width:105px}.user-app .header-user #account-label{max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-app .help-link{font-size:11px}.user-app .app-sidebar nav{gap:3px}.user-app .nav-item{font-size:11px;padding-left:3px;padding-right:3px}}
+.user-app .header-user #account-label{overflow:hidden;text-overflow:ellipsis}@media(max-width:650px){.user-app .app-header{padding:0 16px;gap:8px}.user-app .header-user #account-label{max-width:50px}}

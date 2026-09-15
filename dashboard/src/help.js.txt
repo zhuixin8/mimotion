@@ -1,0 +1,19 @@
+const $=id=>document.getElementById(id);
+const checks=[...document.querySelectorAll('[data-progress]')],key='mimotion-guide-progress-v1';
+try{const saved=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(saved))for(const box of checks)box.checked=saved.includes(box.dataset.progress);}catch{}
+function progress(){const selected=checks.filter(b=>b.checked).map(b=>b.dataset.progress);$('guide-progress').max=checks.length;$('guide-progress').value=selected.length;$('progress-count').textContent=selected.length+' / '+checks.length;try{localStorage.setItem(key,JSON.stringify(selected));}catch{}}
+checks.forEach(box=>box.addEventListener('change',progress));progress();
+$('reset-progress').addEventListener('click',()=>{checks.forEach(b=>b.checked=false);progress();});
+const faq=[...document.querySelectorAll('.faq-item')];
+$('faq-search').addEventListener('input',()=>{const value=$('faq-search').value.trim().toLocaleLowerCase();let count=0;for(const item of faq){item.hidden=!item.textContent.toLocaleLowerCase().includes(value);if(!item.hidden)count++;}$('faq-count').textContent=value?'找到 '+count+' 个相关问题':'共 '+faq.length+' 个问题';$('faq-empty').hidden=count>0;});
+const dialog=$('figure-dialog');
+document.querySelectorAll('[data-zoom]').forEach(button=>button.addEventListener('click',()=>{const img=button.querySelector('img');$('figure-large').src=button.dataset.zoom;$('figure-large').alt=img.alt;$('figure-dialog-title').textContent=button.closest('figure').querySelector('figcaption').childNodes[0].textContent.trim();dialog.showModal();}));
+$('close-figure').addEventListener('click',()=>dialog.close());
+dialog.addEventListener('click',e=>{if(e.target===dialog){const box=dialog.getBoundingClientRect();if(e.clientX<box.left||e.clientX>box.right||e.clientY<box.top||e.clientY>box.bottom)dialog.close();}});
+let printState=[];
+window.addEventListener('beforeprint',()=>{printState=faq.map(d=>({open:d.open,hidden:d.hidden}));for(const d of faq){d.hidden=false;d.open=true;}});
+window.addEventListener('afterprint',()=>{faq.forEach((d,i)=>{if(printState[i]){d.open=printState[i].open;d.hidden=printState[i].hidden;}});});
+$('print-guide').addEventListener('click',()=>window.print());
+const nav=[...document.querySelectorAll('.guide-sidebar nav a')];
+if('IntersectionObserver' in window){const observer=new IntersectionObserver(entries=>{const visible=entries.filter(e=>e.isIntersecting).sort((a,b)=>a.boundingClientRect.top-b.boundingClientRect.top)[0];if(!visible)return;for(const a of nav){if(a.hash==='#'+visible.target.id)a.setAttribute('aria-current','location');else a.removeAttribute('aria-current');}},{rootMargin:'-100px 0px -65% 0px'});document.querySelectorAll('.guide-section').forEach(s=>observer.observe(s));}
+fetch('/api/site').then(r=>{if(!r.ok)throw Error();return r.json();}).then(site=>{if(typeof site.name==='string'&&site.name){document.querySelectorAll('[data-site-name]').forEach(e=>e.textContent=site.name);document.title='使用指南 · '+site.name+' 帮助中心';}if(typeof site.contact==='string'&&site.contact.trim())$('guide-contact').textContent='服务方联系方式：'+site.contact;}).catch(()=>{});
