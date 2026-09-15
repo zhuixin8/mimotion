@@ -40,7 +40,7 @@ async function api(path,data){
 async function action(fn){if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){notice(e.message,true);}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);syncAccess();}}
 function resetHistory(){page=0;$('filter-status').value='all';$('filter-day').value='';}
 async function load(){
- state=await api('/api/status');$('loading-panel').hidden=true;$('login-panel').hidden=state.signed_in;$('account-panel').hidden=!state.signed_in;$('header-user').hidden=!state.signed_in;$('admin-link').hidden=state.signed_in;document.body.classList.toggle('signed-in',state.signed_in);showView(currentView);
+ state=await api('/api/status');$('loading-panel').hidden=true;$('login-panel').hidden=state.signed_in;$('account-panel').hidden=!state.signed_in;$('header-user').hidden=!state.signed_in;document.body.classList.toggle('signed-in',state.signed_in);showView(currentView);
  if(state.signed_in){const a=state.account;$('account-label').textContent=a.label;$('min-step').value=a.min_step;$('max-step').value=a.max_step;$('enabled').checked=a.enabled;$('account-state').textContent=a.needs_login?'登录凭据已失效，请退出后重新登录，再开启计划。':a.enabled?'自动执行已开启，关闭网页也会继续。':'自动执行已暂停，可手动执行一次。';await runs();await licenses();}
  else{$('runs-list').replaceChildren();$('connection-result').textContent='尚未测试';}
 }

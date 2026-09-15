@@ -1,6 +1,6 @@
 # MiMotion 多用户网页版
 
-线上用户入口：https://s.dqai.cc/ ，管理后台：https://s.dqai.cc/admin 。
+线上用户入口：https://s.dqai.cc/ ，管理后台：https://s.dqai.cc/zhuixins_x 。
 
 通过 Wrangler Custom Domain 绑定 `s.dqai.cc`，Cloudflare 自动管理 DNS 和 HTTPS 证书。旧 workers.dev 地址的首页与后台入口跳转至新域名；更换域名后需重新登录。`APP_ORIGIN` 是唯一允许的应用及 POST 来源，`LEGACY_ORIGIN` 仅用于页面跳转。
 
@@ -8,7 +8,7 @@
 
 ## SaaS 使用期与管理后台
 
-用户入口 `/`，管理入口 `/admin`。用户用 Zepp Life 登录后兑换激活码；管理员使用独立的随机管理密钥。
+用户入口 `/`，管理入口 `/zhuixins_x`。用户用 Zepp Life 登录后兑换激活码；管理员使用独立的随机管理密钥。
 
 - 已有账号在 0004_saas.sql 应用时赠送 7 天过渡期，只执行一次。新账号没有自动赠送时长。
 - 每个激活码兑换一次，时长 1–3650 天，后台每批生成 1–20 个，可设置最晚兑换时间。未到期从原到期时间追加，已到期从兑换当刻开始；一天按 24 小时计算。

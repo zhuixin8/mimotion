@@ -31,14 +31,15 @@ async function route(request, env) {
   const url = new URL(request.url), path = url.pathname;
   if (url.origin !== env.APP_ORIGIN) {
     // Redirect only navigation from the configured old host; never forward credentials.
-    if (url.origin === env.LEGACY_ORIGIN && request.method === 'GET' && ['/', '/setup', '/admin', '/admin/'].includes(path)) {
+    if (url.origin === env.LEGACY_ORIGIN && request.method === 'GET' && ['/', '/setup', '/zhuixins_x', '/zhuixins_x/'].includes(path)) {
       return new Response(null, {status:302, headers:{Location:env.APP_ORIGIN + path}});
     }
     throw new UserError('访问地址不正确。', 403);
   }
+  if (['/admin','/admin/','/admin.js'].includes(path) || path.startsWith('/api/admin/')) throw new UserError('页面不存在。',404);
   if (!['GET','POST'].includes(request.method)) throw new UserError('不支持的请求。', 405);
   if (request.method === 'GET') {
-    const assets = {'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/admin':[adminHtml,'text/html'], '/admin/':[adminHtml,'text/html'], '/admin.js':[adminClient,'text/javascript']};
+    const assets = {'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/zhuixins_x':[adminHtml,'text/html'], '/zhuixins_x/':[adminHtml,'text/html'], '/zhuixins_x/app.js':[adminClient,'text/javascript']};
     if (assets[path]) return new Response(assets[path][0], {headers:{'content-type':assets[path][1]+'; charset=utf-8'}});
     if (path === '/favicon.ico') return new Response(null,{status:204});
   }
@@ -49,7 +50,7 @@ async function route(request, env) {
     try { data = JSON.parse(await readText(request, 4096)); } catch { throw new UserError('请求内容无效或过大。', 400); }
     if (!data || Array.isArray(data) || typeof data !== 'object') throw new UserError('请求内容无效。');
   }
-  if(path.startsWith('/api/admin/'))return adminRoute(request,env,url,data);
+  if(path.startsWith('/api/zhuixins_x/'))return adminRoute(request,env,url,data);
   if (path === '/api/login' && request.method === 'POST') {
     if (data.consent !== true) throw new UserError('请先同意保存加密登录凭据。');
     const v = validate(data);

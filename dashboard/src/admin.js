@@ -1,5 +1,6 @@
 import {equal,open,seal,random,UserError} from './security.js';
 import {hash} from './licensing.js';
+import {verifyAdminPassword} from './admin-password.js';
 import {query,limit,seconds} from './jobs.js';
 const COOKIE='__Host-mimotion-admin-v1';
 const json=data=>Response.json(data);
@@ -21,29 +22,29 @@ function page(url){return integer(url.searchParams.get('page')||0,0,10000);}
 function text(v,max=100){if(typeof v!=='string'||v.length>max)throw new UserError('输入内容过长或格式无效。');return v.trim();}
 export async function adminRoute(req,env,url,data) {
   const path=url.pathname;
-  if(path==='/api/admin/login'&&req.method==='POST'){
+  if(path==='/api/zhuixins_x/login'&&req.method==='POST'){
     await limit(env,'admin-login-global',30,3600);
     await limit(env,'admin-login:'+await hash(req.headers.get('CF-Connecting-IP')||'local'),5,600);
     const provided=typeof data.key==='string'&&data.key.length<=128?data.key.trim():'';
     const auth=await query(env,'SELECT key_hash,version FROM admin_auth WHERE id=1').first();
-    if(!auth||!await equal(await hash('admin-key:'+provided),auth.key_hash))throw new UserError('管理密钥不正确。',401);
+    if(!auth||!await verifyAdminPassword(provided,auth.key_hash))throw new UserError('管理员密码不正确。',401);
     const s={role:'owner',version:auth.version,csrf:random(),exp:seconds()+7200};
     await audit(env,'login','admin');
     const res=json({ok:true});cookie(res,await seal(s,env.MASTER_SECRET,'admin-session-v1'));return res;
   }
   const s=await adminSession(req,env);
-  if(path==='/api/admin/status'&&req.method==='GET')return json({signed_in:!!s,csrf:s?.csrf});
+  if(path==='/api/zhuixins_x/status'&&req.method==='GET')return json({signed_in:!!s,csrf:s?.csrf});
   if(!s)throw new UserError('请先登录管理后台。',401);
   if(req.method==='POST'){
     if(!await equal(req.headers.get('X-CSRF-Token'),s.csrf))throw new UserError('管理页面已过期，请刷新。',403);
     await limit(env,'admin-write',40,60);
   }
-  if(path==='/api/admin/overview'&&req.method==='GET'){
+  if(path==='/api/zhuixins_x/overview'&&req.method==='GET'){
     const users=await query(env,'SELECT COUNT(*) total,COALESCE(SUM(expires_at>? AND suspended=0),0) active,COALESCE(SUM(suspended=1),0) suspended FROM memberships',seconds()).first();
     const codes=await query(env,'SELECT COUNT(*) total,COALESCE(SUM(redeemed_by IS NOT NULL),0) redeemed,COALESCE(SUM(redeemed_by IS NULL AND disabled=0 AND (valid_until IS NULL OR valid_until>?)),0) available FROM activation_codes',seconds()).first();
     return json({users,codes});
   }
-  if(path==='/api/admin/users'&&req.method==='GET'){
+  if(path==='/api/zhuixins_x/users'&&req.method==='GET'){
     const p=page(url),search=text(url.searchParams.get('search')||'');
     const {results}=await query(env,`SELECT m.account_id,m.expires_at,m.suspended,m.revision,m.created_at,
       a.label,a.enabled,a.needs_login,a.id IS NULL AS profile_deleted
@@ -52,18 +53,18 @@ export async function adminRoute(req,env,url,data) {
       ORDER BY m.created_at DESC,m.account_id DESC LIMIT 21 OFFSET ?`,search,search,search,p*20).all();
     return json({users:results.slice(0,20),has_more:results.length>20,page:p});
   }
-  if(path==='/api/admin/codes'&&req.method==='GET'){
+  if(path==='/api/zhuixins_x/codes'&&req.method==='GET'){
     const p=page(url),status=url.searchParams.get('status')||'all';
     const conditions={all:'1=1',unused:'redeemed_by IS NULL AND disabled=0 AND (valid_until IS NULL OR valid_until>unixepoch())',used:'redeemed_by IS NOT NULL',disabled:'disabled=1',expired:'redeemed_by IS NULL AND valid_until<=unixepoch()'};
     if(!Object.hasOwn(conditions,status))throw new UserError('激活码筛选无效。');
     const {results}=await query(env,`SELECT id,hint,duration_days,batch_id,note,valid_until,disabled,redeemed_by,redeemed_at,created_at FROM activation_codes WHERE ${conditions[status]} ORDER BY created_at DESC,id DESC LIMIT 21 OFFSET ?`,p*20).all();
     return json({codes:results.slice(0,20),has_more:results.length>20,page:p});
   }
-  if(path==='/api/admin/audit'&&req.method==='GET'){
+  if(path==='/api/zhuixins_x/audit'&&req.method==='GET'){
     const p=page(url),{results}=await query(env,'SELECT id,actor,action,target,details,created_at FROM admin_audit ORDER BY created_at DESC,id DESC LIMIT 21 OFFSET ?',p*20).all();
     return json({events:results.slice(0,20),has_more:results.length>20,page:p});
   }
-  if(path==='/api/admin/codes/create'&&req.method==='POST'){
+  if(path==='/api/zhuixins_x/codes/create'&&req.method==='POST'){
     const days=integer(data.days,1,3650),count=integer(data.count,1,20),note=text(data.note||'');
     const validUntil=data.valid_until?integer(data.valid_until,seconds()+60,seconds()+3650*86400):null;
     const batch=crypto.randomUUID(),t=seconds(),codes=[],statements=[];
@@ -76,12 +77,12 @@ export async function adminRoute(req,env,url,data) {
     statements.push(query(env,'INSERT INTO admin_audit(id,actor,action,target,details,created_at) VALUES(?,?,?,?,?,?)',crypto.randomUUID(),'admin','create_codes',batch,JSON.stringify({days,count,note}),t));
     await env.DB.batch(statements);return json({ok:true,batch_id:batch,codes});
   }
-  if(path==='/api/admin/codes/reveal'&&req.method==='POST'){
+  if(path==='/api/zhuixins_x/codes/reveal'&&req.method==='POST'){
     const id=text(data.id,80),row=await query(env,'SELECT encrypted_code FROM activation_codes WHERE id=?',id).first();
     if(!row)throw new UserError('激活码不存在。',404);
     await audit(env,'reveal_code',id);return json({code:await open(row.encrypted_code,env.MASTER_SECRET,'activation:'+id)});
   }
-  if(path==='/api/admin/codes/revoke'&&req.method==='POST'){
+  if(path==='/api/zhuixins_x/codes/revoke'&&req.method==='POST'){
     const id=text(data.id,80);
     await env.DB.batch([
       query(env,`INSERT INTO admin_audit(id,actor,action,target,details,created_at) SELECT ?,'admin','revoke_code',id,'{}',? FROM activation_codes WHERE id=? AND redeemed_by IS NULL AND disabled=0`,crypto.randomUUID(),seconds(),id),
@@ -91,7 +92,7 @@ export async function adminRoute(req,env,url,data) {
     if(!row||row.redeemed_by!==null)throw new UserError('已兑换的码不能停用；可在用户管理中调整权限。',409);
     return json({ok:true});
   }
-  if(path==='/api/admin/users/update'&&req.method==='POST'){
+  if(path==='/api/zhuixins_x/users/update'&&req.method==='POST'){
     const id=text(data.id,100),revision=integer(data.revision,1,100000000),reason=text(data.reason||'',200),mode=data.mode;
     if(!['extend','expiry','suspend','resume'].includes(mode))throw new UserError('管理操作无效。');
     const current=await query(env,'SELECT * FROM memberships WHERE account_id=?',id).first();
@@ -108,7 +109,7 @@ export async function adminRoute(req,env,url,data) {
     if(!result[1].meta.changes)throw new UserError('用户权限已变化，请刷新后重试。',409);
     return json({ok:true});
   }
-  if(path==='/api/admin/rotate-key'&&req.method==='POST'){
+  if(path==='/api/zhuixins_x/rotate-key'&&req.method==='POST'){
     if(data.confirm!==true)throw new UserError('请确认更换管理密钥。');
     const key=random(32),version=random();
     const result=await env.DB.batch([
@@ -118,7 +119,7 @@ export async function adminRoute(req,env,url,data) {
     if(!result[0].meta.changes)throw new UserError('管理密钥已经变化，请重新登录。',409);
     const res=json({ok:true,key});cookie(res,'',0);return res;
   }
-  if(path==='/api/admin/logout'&&req.method==='POST'){
+  if(path==='/api/zhuixins_x/logout'&&req.method==='POST'){
     await query(env,'UPDATE admin_auth SET version=? WHERE id=1 AND version=?',random(),s.version).run();
     const res=json({ok:true});cookie(res,'',0);return res;
   }
