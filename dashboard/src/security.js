@@ -31,6 +31,11 @@ export async function aesCBC(text, secret, suppliedIV) {
 export class UserError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
 }
+export class UpstreamError extends UserError {
+  constructor(message, code, retryable = false, retryAfter = 0) {
+    super(message, 502); this.code = code; this.retryable = retryable; this.retryAfter = retryAfter;
+  }
+}
 export async function readText(response, limit = 1024 * 1024) {
   if (!response.body) return '';
   const reader = response.body.getReader(); let length = 0; const chunks = [];
@@ -43,13 +48,33 @@ export async function readText(response, limit = 1024 * 1024) {
   return new TextDecoder().decode(all);
 }
 export async function fetchJSON(url, options = {}, label = '远端服务') {
-  const response = await fetch(url, {...options, redirect: 'manual', signal: AbortSignal.timeout(20000)});
-  const text = await readText(response);
-  let data = {}; try { data = text ? JSON.parse(text) : {}; } catch {
-    const type = (response.headers.get('Content-Type') || '').split(';')[0].toLowerCase();
-    const kind = type === 'application/octet-stream' ? '二进制内容' : type === 'text/html' ? '网页内容' : '非 JSON 内容';
-    // Expose only the stage, status and content category, never body text or tokens.
-    throw new UserError(`${label}返回了${kind}（HTTP ${response.status}），暂时无法完成请求。`, 502);
+  const safe = (options.method || 'GET').toUpperCase() === 'GET';
+  for (let attempt = 0; ; attempt++) {
+    try {
+      let response, text;
+      try {
+        response = await fetch(url, {...options, redirect: 'manual', signal: AbortSignal.timeout(20000)});
+        if (response.status === 429 || response.status === 408 || response.status >= 500) {
+          const raw = response.headers.get('retry-after');
+          const delay = raw === null ? 0 : /^\d+$/.test(raw) ? Number(raw) : Math.max(0, Math.ceil((Date.parse(raw) - Date.now()) / 1000));
+          await response.body?.cancel();
+          throw new UpstreamError(`${label}${response.status === 429 ? '请求受限' : '暂时不可用'}（HTTP ${response.status}），稍后重试。`, response.status === 429 ? 'rate_limited' : 'upstream_unavailable', true, Number.isFinite(delay) ? Math.min(delay,86400) : 0);
+        }
+        text = await readText(response);
+      } catch (e) {
+        if (e instanceof UserError) throw e;
+        throw new UpstreamError(`${label}网络连接中断或超时。`, 'network_timeout', true);
+      }
+      let data = {}; try { data = text ? JSON.parse(text) : {}; } catch {
+        const type = (response.headers.get('Content-Type') || '').split(';')[0].toLowerCase();
+        const kind = type === 'application/octet-stream' ? '二进制内容' : type === 'text/html' ? '网页内容' : '非 JSON 内容';
+        throw new UpstreamError(`${label}返回了${kind}（HTTP ${response.status}），暂时无法完成请求。`, 'response_format');
+      }
+      return {response, data};
+    } catch (e) {
+      // Retry reads once. A POST is never automatically repeated, including on timeout.
+      if (!safe || !e.retryable || attempt >= 1 || e.retryAfter > 2) throw e;
+      await new Promise(resolve => setTimeout(resolve, Math.max(e.retryAfter * 1000, 250 + Math.floor(Math.random()*250))));
+    }
   }
-  return {response, data};
 }

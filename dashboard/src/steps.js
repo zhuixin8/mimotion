@@ -1,10 +1,11 @@
 import template from './band-template.json';
-import {fetchJSON, UserError} from './security.js';
+import {fetchJSON, UserError, UpstreamError} from './security.js';
 export async function refreshToken(tokens) {
   const params = new URLSearchParams({app_name:'com.xiaomi.hm.health', dn:'api-user.huami.com,api-mifit.huami.com,app-analytics.huami.com', login_token:tokens.login_token});
   const {response, data} = await fetchJSON('https://account-cn.huami.com/v1/client/app_tokens?' + params, {headers:{'user-agent':'MiFit/5.3.0 (iPhone; iOS 14.7.1; Scale/3.00)'}}, 'Zepp 凭据刷新接口');
   if (response.status === 429 || response.status >= 500) throw new UserError('Zepp 服务暂时不可用，请稍后重试。', 503);
-  if (!response.ok || data.result !== 'ok' || !data.token_info?.app_token) throw new UserError('Zepp 登录凭据已失效，请重新登录。', 401);
+  if (response.status===401 || response.status===403 || data.result==='fail') throw new UserError('Zepp 登录凭据已失效，请重新登录。', 401);
+  if (!response.ok || data.result !== 'ok' || !data.token_info?.app_token) throw new UpstreamError('Zepp 凭据接口响应格式发生变化，暂时无法验证。','response_format');
   tokens.app_token = data.token_info.app_token;
   tokens.app_token_time = String(Date.now());
 }

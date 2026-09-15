@@ -44,7 +44,8 @@ function renderRuntime(runtime){
  $('runtime-reading-time').textContent=runtime.reading?'数据日期 '+runtime.reading.day+' · 读取于 '+when(runtime.reading.checked_at):'测试连接后显示云端读数';
 }
 async function licenses(){const d=await api('/api/license');syncAccess(d.membership);const box=$('redemption-list');box.replaceChildren();if(!d.redemptions.length)box.textContent='暂无激活码兑换记录。';for(const r of d.redemptions){const item=element('div',undefined,'run');item.textContent=r.hint+' · '+r.duration_days+' 天 · '+when(r.created_at)+' · 兑换后到期 '+when(r.new_expiry);box.append(item);}}
-const verifyLabels={checking:'正在读回核对',not_checked:'尚未核对',matched:'云端步数已达到目标',below_target:'云端步数暂未达到目标，可稍后核对',unavailable:'暂未读回步数，效果尚未核实',readable:'当天步数可读取'};
+const errorLabels={network_timeout:'连接超时',rate_limited:'请求受限',upstream_unavailable:'远端服务暂时不可用',response_format:'接口响应格式变化',execution_interrupted:'执行中断',delivery_exhausted:'投递恢复次数已用尽',delivery_delayed:'队列处理延迟',submission_uncertain:'提交结果待确认',credentials_expired:'登录凭据过期',execution_failed:'执行异常'};
+const verifyLabels={waiting:'等待云端同步，将自动只读核对',checking:'正在读回核对',not_checked:'尚未核对',matched:'云端步数已达到目标',below_target:'云端步数暂未达到目标，可稍后核对',unavailable:'暂未读回步数，效果尚未核实',readable:'当天步数可读取'};
 function notice(text,error=false){$('notice').textContent=text;$('notice').className='notice '+(error?'error':'success');$('notice').hidden=!text;}
 async function api(path,data){
  const response=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json','X-CSRF-Token':state?.csrf||''},body:data===undefined?undefined:JSON.stringify(data),credentials:'same-origin'});
@@ -80,7 +81,7 @@ async function runs(){
   const detail=element('details');detail.dataset.id=r.id;detail.open=expanded.has(r.id);detail.append(element('summary','查看测试过程与步数对比'));
   const grid=element('div',undefined,'record-details');
   const diff=typeof r.before_step==='number'&&typeof r.observed_step==='number'?((r.observed_step-r.before_step>=0?'+':'')+(r.observed_step-r.before_step)+' 步'):'无法比较';
-  for(const [label,value] of [['任务编号',r.id],['开始 / 完成',when(r.started_at)+' / '+when(r.finished_at)],['提交前读数',check||verification?'本次不提交':steps(r.before_step)],['核对时云端读数',steps(r.observed_step)],['读数变化',diagnostic?'本次只查询':diff],['核对结果',verifyLabels[r.verification]||'尚未核对'],['最近核对时间',when(r.checked_at)]]){const cell=element('div');cell.append(element('span',label),element('strong',value));grid.append(cell);}
+  for(const [label,value] of [['任务编号',r.id],['开始 / 完成',when(r.started_at)+' / '+when(r.finished_at)],['提交前读数',check||verification?'本次不提交':steps(r.before_step)],['核对时云端读数',steps(r.observed_step)],['读数变化',diagnostic?'本次只查询':diff],['核对结果',verifyLabels[r.verification]||'尚未核对'],['最近核对时间',when(r.checked_at)],['执行尝试',String(r.attempt_count||0)+' 次'],['异常分类',errorLabels[r.error_code]||(r.error_code?'执行异常':'无')],['预计重试 / 核对',r.next_attempt_at&&['pending','queued'].includes(r.status)?when(r.next_attempt_at):'—']]){const cell=element('div');cell.append(element('span',label),element('strong',value));grid.append(cell);}
   if(r.parent_id){const cell=element('div');cell.append(element('span','对应执行记录'),element('strong',r.parent_id));grid.append(cell);}
   detail.append(grid,element('p','读回数值仅反映 Zepp 云端记录，不证明第三方 App 已同步，也不能排除其他设备同时写入。','hint'));
   if(!diagnostic&&['success','unknown'].includes(r.status)){const button=element('button','重新核对（不重新提交）','text-button');button.type='button';button.dataset.memberAction='true';button.disabled=busy||!state.account.membership.active;button.onclick=()=>action(async()=>{await api('/api/verify',{id:r.id});resetHistory();await runs();notice('已安排只读核对，稍后自动更新原记录的核对结果。');});detail.append(button);}

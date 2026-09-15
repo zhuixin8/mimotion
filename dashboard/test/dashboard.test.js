@@ -9,7 +9,7 @@ const origin='https://mimotion.test';
 const time=()=>Math.floor(Date.now()/1000);
 const day=()=>new Date(Date.now()+28800000).toISOString().slice(0,10);
 function environment(){
- const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');for(const file of ['0001_multiuser.sql','0002_delivery.sql','0003_verification.sql','0004_saas.sql','0005_operations.sql'])db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
+ const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');for(const file of ['0001_multiuser.sql','0002_delivery.sql','0003_verification.sql','0004_saas.sql','0005_operations.sql','0006_reliability.sql'])db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
  const env={APP_ORIGIN:origin,MASTER_SECRET:'test-secret-only',MAX_ACCOUNTS:'200',db,sent:[],queries:0};
  function statement(sql,args=[]){return {bind(...v){return statement(sql,v);},async first(){env.queries++;return db.prepare(sql).get(...args)||null;},async all(){env.queries++;return {results:db.prepare(sql).all(...args)};},async run(){env.queries++;const r=db.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}};}};}
  env.DB={prepare:sql=>statement(sql),batch:async statements=>{db.exec('BEGIN');try{const r=await Promise.all(statements.map(s=>s.run()));db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}};
@@ -21,6 +21,90 @@ async function account(env,id,enabled=1){const tokens={user_id:id,login_token:'l
 function addRun(env,id,owner,kind='manual',status='queued',d=day()){env.db.prepare('INSERT INTO runs(id,account_id,slot,kind,day,step,status,created_at,updated_at) VALUES(?,?,?,?,?,20000,?,?,?)').run(id,owner,id,kind,d,status,time(),time());}
 function msg(id,attempts=1){return {body:{id},attempts,acked:false,retried:false,ack(){this.acked=true;},retry(){this.retried=true;}};}
 function consume(env,m){return worker.queue({messages:[m]},env);}
+
+test('legacy running jobs without an execution marker are never replayed',async()=>{
+ const env=environment();await account(env,'A',0);addRun(env,'legacy','A','manual','running');env.db.prepare("UPDATE runs SET updated_at=? WHERE id='legacy'").run(time()-700);
+ await worker.scheduled({scheduledTime:Date.parse(day()+'T01:15:00Z')},env);
+ assert.equal(env.db.prepare("SELECT status FROM runs WHERE id='legacy'").get().status,'unknown');assert.ok(!env.sent.some(m=>m.id==='legacy'));
+});
+
+test('follow-up creation rolls back atomically and cron recovers without repeating POST',async(t)=>{
+ const env=environment();await account(env,'A',0);addRun(env,'r','A');const mock=zeppMock(t,{below:true});
+ env.db.exec("CREATE TRIGGER fail_followup BEFORE INSERT ON runs WHEN NEW.auto_round=2 BEGIN SELECT RAISE(ABORT,'injected batch failure'); END;");
+ await consume(env,msg('r'));let source=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(source.status,'success');assert.equal(source.auto_checks_scheduled,0);assert.equal(env.db.prepare("SELECT COUNT(*) n FROM runs WHERE parent_id='r'").get().n,0);
+ env.db.exec('DROP TRIGGER fail_followup');await worker.scheduled({scheduledTime:Date.parse(day()+'T01:15:00Z')},env);source=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(source.verification,'waiting');assert.equal(env.db.prepare("SELECT COUNT(*) n FROM runs WHERE parent_id='r'").get().n,2);assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,1);
+});
+
+test('safe GET retry is bounded; POST and malformed responses are never retried',async(t)=>{
+ let calls=0;t.mock.method(globalThis,'fetch',async()=>{calls++;return calls===1?new Response('private',{status:503}):Response.json({ok:true});});
+ assert.equal((await fetchJSON('https://example.test')).data.ok,true);assert.equal(calls,2);
+ calls=0;await assert.rejects(fetchJSON('https://example.test',{method:'POST'}),e=>e.retryable&&!e.message.includes('private'));assert.equal(calls,1);
+ calls=0;t.mock.method(globalThis,'fetch',async()=>{calls++;return new Response('private',{headers:{'content-type':'application/octet-stream'}});});
+ await assert.rejects(fetchJSON('https://example.test'),e=>e.code==='response_format'&&!e.message.includes('private'));assert.equal(calls,1);
+ calls=0;t.mock.method(globalThis,'fetch',async()=>{calls++;return new Response('private',{status:429,headers:{'retry-after':'180'}});});
+ await assert.rejects(fetchJSON('https://example.test'),e=>e.code==='rate_limited'&&e.retryAfter===180);assert.equal(calls,1);
+});
+
+test('pre-submit transient failure persists retry delay and never disables credentials',async(t)=>{
+ const env=environment();await account(env,'A');addRun(env,'r','A');const mock=zeppMock(t),normal=globalThis.fetch;let failures=1;
+ t.mock.method(globalThis,'fetch',async(url,opts)=>String(url).includes('/app_tokens')&&failures-->0?new Response(null,{status:429,headers:{'retry-after':'90'}}):normal(url,opts));
+ await consume(env,msg('r'));let r=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(r.status,'queued');assert.equal(r.phase,'preparing');assert.equal(r.attempt_count,1);assert.ok(r.next_attempt_at>=time()+89);assert.equal(r.error_code,'rate_limited');assert.equal(env.db.prepare('SELECT needs_login FROM accounts').get().needs_login,0);
+ const early=msg('r');await consume(env,early);assert.equal(early.retried,true);assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,0);
+ env.db.prepare("UPDATE runs SET next_attempt_at=0 WHERE id='r'").run();await consume(env,msg('r'));r=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(r.status,'success');assert.equal(r.attempt_count,2);assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,1);
+});
+
+test('three transient attempts stop safely and protocol changes do not expire credentials',async(t)=>{
+ const env=environment();await account(env,'A');addRun(env,'r','A');let calls=0;
+ t.mock.method(globalThis,'fetch',async()=>{calls++;return new Response(null,{status:503,headers:{'retry-after':'60'}});});
+ for(let i=0;i<3;i++){env.db.prepare("UPDATE runs SET next_attempt_at=0 WHERE id='r'").run();await consume(env,msg('r'));}
+ assert.equal(calls,3);assert.equal(env.db.prepare("SELECT status FROM runs WHERE id='r'").get().status,'failed');assert.equal(env.db.prepare('SELECT needs_login FROM accounts').get().needs_login,0);
+ addRun(env,'format','A');t.mock.method(globalThis,'fetch',async()=>Response.json({unexpected:true}));await consume(env,msg('format'));assert.equal(env.db.prepare("SELECT error_code FROM runs WHERE id='format'").get().error_code,'response_format');assert.equal(env.db.prepare('SELECT enabled FROM accounts').get().enabled,1);
+});
+
+test('delayed checks update the source, converge and never repeat POST',async(t)=>{
+ const env=environment();await account(env,'A');addRun(env,'r','A');const mock=zeppMock(t,{below:true});await consume(env,msg('r'));
+ const children=env.db.prepare('SELECT * FROM runs WHERE parent_id=? ORDER BY auto_round').all('r');assert.equal(children.length,2);assert.ok(children[0].next_attempt_at>=time()+29);assert.ok(children[1].next_attempt_at>=time()+119);
+ const early=msg(children[0].id);await consume(env,early);assert.equal(early.retried,true);
+ env.db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').run(children[0].id);await consume(env,msg(children[0].id));assert.equal(env.db.prepare("SELECT verification FROM runs WHERE id='r'").get().verification,'waiting');
+ const normal=globalThis.fetch;t.mock.method(globalThis,'fetch',async(url,opts={})=>String(url).includes('/band_data')&&opts.method!=='POST'?Response.json({message:'success',data:[{date:day(),summary:{stp:{ttl:25000}}}]}):normal(url,opts));
+ env.db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').run(children[1].id);await consume(env,msg(children[1].id));const r=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(r.verification,'matched');assert.equal(r.status,'success');assert.equal(r.observed_step,25000);
+ await consume(env,msg(children[1].id));assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,1);
+});
+
+test('automatic verification has a final unresolved state and expires with membership',async(t)=>{
+ const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t,{below:true});await consume(env,msg('r'));
+ const children=env.db.prepare('SELECT id FROM runs WHERE parent_id=? ORDER BY auto_round DESC').all('r');
+ for(const child of children){env.db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').run(child.id);await consume(env,msg(child.id));}
+ assert.equal(env.db.prepare("SELECT verification FROM runs WHERE id='r'").get().verification,'below_target');
+ addRun(env,'other','A');await consume(env,msg('other'));env.db.prepare('UPDATE memberships SET expires_at=?').run(time()-1);
+ for(const c of env.db.prepare('SELECT id FROM runs WHERE parent_id=?').all('other')){env.db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').run(c.id);await consume(env,msg(c.id));}
+ assert.equal(env.db.prepare("SELECT verification FROM runs WHERE id='other'").get().verification,'below_target');
+});
+
+test('database outage after accepted POST recovers as unknown and cannot resubmit',async(t)=>{
+ const env=environment();await account(env,'A',0);addRun(env,'r','A');const mock=zeppMock(t);
+ env.db.exec("CREATE TRIGGER fail_finish BEFORE UPDATE OF status ON runs WHEN NEW.id='r' AND NEW.status IN ('success','unknown') BEGIN SELECT RAISE(ABORT,'injected failure'); END;");
+ await assert.rejects(consume(env,msg('r')));const interrupted=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(interrupted.phase,'accepted');assert.equal(interrupted.status,'running');
+ env.db.exec('DROP TRIGGER fail_finish');env.db.prepare("UPDATE runs SET updated_at=? WHERE id='r'").run(time()-700);
+ await worker.scheduled({scheduledTime:Date.parse(day()+'T01:15:00Z')},env);assert.equal(env.db.prepare("SELECT status FROM runs WHERE id='r'").get().status,'unknown');assert.equal(env.db.prepare("SELECT COUNT(*) n FROM runs WHERE parent_id='r'").get().n,2);
+ await consume(env,msg('r'));assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,1);
+});
+
+test('scheduler catches up one missed slot within 30 minutes and deduplicates',async()=>{
+ const env=environment();await account(env,'A');const at=Date.parse(day()+'T00:50:00Z');await worker.scheduled({scheduledTime:at},env);await worker.scheduled({scheduledTime:at+300000},env);
+ assert.equal(env.db.prepare('SELECT COUNT(*) n FROM runs').get().n,1);assert.equal(env.sent.length,1);assert.equal(env.db.prepare('SELECT slot FROM runs').get().slot,'schedule:'+day()+'T08');
+ const late=environment();await account(late,'A');await worker.scheduled({scheduledTime:Date.parse(day()+'T01:10:00Z')},late);assert.equal(late.sent.length,0);
+});
+
+test('outbox recovery respects delivery bounds, future delays and live execution leases',async()=>{
+ const env=environment();for(const id of ['lost','exhausted','future','live','pre','post']){await account(env,id,0);addRun(env,id,id);}
+ env.db.prepare('UPDATE runs SET updated_at=?,delivered_at=?,delivery_count=1').run(time()-1200,time()-1200);
+ env.db.prepare("UPDATE runs SET delivery_count=4 WHERE id='exhausted'").run();env.db.prepare("UPDATE runs SET next_attempt_at=? WHERE id='future'").run(time()+600);
+ env.db.prepare("UPDATE runs SET status='running',execution_id='test-execution',attempt_count=1 WHERE id IN ('live','pre','post')").run();env.db.prepare("UPDATE runs SET phase='submitting' WHERE id='post'").run();env.db.prepare("UPDATE accounts SET lease_until=? WHERE id='live'").run(time()+300);
+ await worker.scheduled({scheduledTime:Date.parse(day()+'T01:15:00Z')},env);
+ const state=id=>env.db.prepare('SELECT * FROM runs WHERE id=?').get(id);
+ assert.equal(state('lost').delivery_count,2);assert.equal(state('exhausted').status,'failed');assert.equal(state('future').delivery_count,1);assert.equal(state('live').status,'running');assert.equal(state('pre').status,'queued');assert.equal(state('post').status,'unknown');assert.ok(!env.sent.some(m=>m.id==='post'));
+});
 function zeppMock(t,options={}){const calls=[];const cloud=new Map();let active=0,maxActive=0;
  t.mock.method(globalThis,'fetch',async(url,opts={})=>{url=String(url);calls.push({url,opts});
  if(url.includes('/registrations/tokens'))return new Response(null,{status:303,headers:{Location:'https://example.test/?access=valid-access'}});
@@ -54,16 +138,16 @@ test('scheduler batches 200 accounts within query budget, retries outbox, and de
 
 test('login and manual run rate limits do not create extra jobs',async(t)=>{const env=environment();const a=await account(env,'A');assert.equal((await api(env,'/api/run',{},a)).status,202);assert.equal((await api(env,'/api/run',{},a)).status,429);assert.equal(env.db.prepare('SELECT COUNT(*) AS n FROM runs').get().n,1);zeppMock(t);const data={account:'a@example.com',password:'p',min_step:1,max_step:2,consent:true};for(let i=0;i<5;i++)assert.equal((await api(env,'/api/login',data)).status,200);assert.equal((await api(env,'/api/login',data)).status,429);});
 
-test('non-JSON failures never expose upstream bodies; invalid inputs rejected',async(t)=>{t.mock.method(globalThis,'fetch',async()=>new Response('secret-upstream-token',{status:502,headers:{'content-type':'application/octet-stream'}}));await assert.rejects(fetchJSON('https://example.test'),e=>e.message.includes('二进制')&&!e.message.includes('secret-upstream'));assert.equal(validate({account:'13800138000',password:'a#b',min_step:1,max_step:2}).account,'+8613800138000');assert.throws(()=>validate({account:'a@example.com',password:'p',min_step:4,max_step:2}));});
+test('non-JSON failures never expose upstream bodies; invalid inputs rejected',async(t)=>{t.mock.method(globalThis,'fetch',async()=>new Response('secret-upstream-token',{status:502,headers:{'content-type':'application/octet-stream'}}));await assert.rejects(fetchJSON('https://example.test'),e=>e.code==='upstream_unavailable'&&!e.message.includes('secret-upstream'));assert.equal(validate({account:'13800138000',password:'a#b',min_step:1,max_step:2}).account,'+8613800138000');assert.throws(()=>validate({account:'a@example.com',password:'p',min_step:4,max_step:2}));});
 
 
 test('automatic post-login diagnostic only reads; outcome includes today steps and audit timestamps',async(t)=>{const env=environment();const mock=zeppMock(t);const input={account:'check@example.com',password:'p',min_step:18000,max_step:25000,consent:true};const res=await api(env,'/api/login',input);assert.equal(res.status,200);env.db.prepare('UPDATE memberships SET expires_at=?').run(time()+86400);await api(env,'/api/login',input);const r=env.db.prepare('SELECT * FROM runs').get();assert.equal(r.kind,'check');await consume(env,msg(r.id));const checked=env.db.prepare('SELECT * FROM runs').get();assert.equal(checked.status,'success');assert.equal(checked.observed_step,1000);assert.equal(checked.verification,'readable');assert.ok(checked.started_at&&checked.finished_at&&checked.checked_at);assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,0);});
 
 test('accepted submission persists before/after evidence and confirmed comparison',async(t)=>{const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t);await consume(env,msg('r'));const row=env.db.prepare('SELECT * FROM runs').get();assert.equal(row.status,'success');assert.equal(row.before_step,1000);assert.equal(row.observed_step,20000);assert.equal(row.verification,'matched');});
 
-test('accepted submission with stale readback is not marked verified',async(t)=>{const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t,{below:true});await consume(env,msg('r'));const row=env.db.prepare('SELECT * FROM runs').get();assert.equal(row.status,'success');assert.equal(row.verification,'below_target');assert.equal(row.observed_step,1000);});
+test('accepted submission with stale readback is not marked verified',async(t)=>{const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t,{below:true});await consume(env,msg('r'));const row=env.db.prepare('SELECT * FROM runs').get();assert.equal(row.status,'success');assert.equal(row.verification,'waiting');assert.equal(row.observed_step,1000);});
 
-test('missing upstream rows stay null, never zero or verified success',async(t)=>{const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t,{unreadable:true});await consume(env,msg('r'));const row=env.db.prepare('SELECT * FROM runs').get();assert.equal(row.status,'success');assert.equal(row.verification,'unavailable');assert.equal(row.observed_step,null);assert.equal(row.before_step,null);});
+test('missing upstream rows stay null, never zero or verified success',async(t)=>{const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t,{unreadable:true});await consume(env,msg('r'));const row=env.db.prepare('SELECT * FROM runs').get();assert.equal(row.status,'success');assert.equal(row.verification,'waiting');assert.equal(row.observed_step,null);assert.equal(row.before_step,null);});
 
 test('recheck is scoped to the owner, supports past dates, updates evidence without another POST',async(t)=>{const env=environment(),a=await account(env,'A'),b=await account(env,'B');addRun(env,'original','A','manual','success','2026-09-01');const mock=zeppMock(t);assert.equal((await api(env,'/api/verify',{id:'original'},b)).status,404);const result=await api(env,'/api/verify',{id:'original'},a);assert.equal(result.status,202);const {id}=await result.json();await consume(env,msg(id));assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,0);assert.equal(new URL(mock.calls.find(c=>c.url.includes('/band_data')).url).searchParams.get('from_date'),'2026-09-01');const original=env.db.prepare("SELECT * FROM runs WHERE id='original'").get();assert.equal(original.status,'success');assert.equal(original.observed_step,1000);assert.equal(original.verification,'below_target');assert.ok(original.checked_at);const hist=await (await api(env,'/api/runs?filter=check',undefined,a)).json();assert.equal(hist.runs.length,1);assert.equal(hist.runs[0].parent_id,'original');});
 

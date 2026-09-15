@@ -46,7 +46,8 @@
         "max_batch_size": 1,
         "max_batch_timeout": 1,
         "max_concurrency": 3,
-        "max_retries": 3
+        "max_retries": 3,
+        "dead_letter_queue": "mimotion-jobs-dead"
       }
     ]
   },
