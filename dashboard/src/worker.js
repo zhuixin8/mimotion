@@ -10,6 +10,8 @@ import {loginZepp, validate} from './zepp.js';
 import {query, limit, seconds, enqueue, scheduled, consume} from './jobs.js';
 import {history} from './history.js';
 import {publicSite} from './site.js';
+import {connectionCheck} from './connection-check.js';
+export {connectionCheck};
 import {membership,requireMembership,redeem,licenseHistory} from './licensing.js';
 import {adminRoute} from './admin.js';
 import adminHtml from './admin.html';
@@ -70,17 +72,20 @@ async function route(request, env) {
     const tokens = Object.values(verified.tokens)[0];
     const id = await identity(env, 'zepp-user:' + String(tokens.user_id));
     const version = random(), t = seconds();
+    const previousAccount=await query(env,'SELECT needs_login FROM accounts WHERE id=?',id).first();
     const result = await query(env, `INSERT INTO accounts(id,label,credentials,min_step,max_step,session_version,created_at,updated_at)
       SELECT ?,?,?,?,?,?,?,? WHERE ((SELECT registration_open FROM site_settings WHERE id=1)=1 OR EXISTS(SELECT 1 FROM memberships WHERE account_id=?)) AND ((SELECT COUNT(*) FROM accounts) < ? OR EXISTS(SELECT 1 FROM accounts WHERE id=?))
       ON CONFLICT(id) DO UPDATE SET credentials=excluded.credentials,label=excluded.label,
       session_version=excluded.session_version,needs_login=0,updated_at=excluded.updated_at
-      WHERE accounts.lease_until < ?`, id, verified.summary.account, await seal(tokens, env.MASTER_SECRET, 'zepp:' + id), v.lo, v.hi, version, t, t, id, Number(env.MAX_ACCOUNTS || 200), id, t).run();
+      WHERE accounts.lease_until < ? OR EXISTS(SELECT 1 FROM runs r WHERE r.account_id=accounts.id AND r.kind='check' AND r.status='running' AND r.execution_id=accounts.lease_id)`, id, verified.summary.account, await seal(tokens, env.MASTER_SECRET, 'zepp:' + id), v.lo, v.hi, version, t, t, id, Number(env.MAX_ACCOUNTS || 200), id, t).run();
     if (!result.meta.changes) throw new UserError('账号正在执行任务、新用户注册已关闭或名额已满，请稍后再试。', 409);
     await query(env,'INSERT INTO memberships(account_id,created_at,updated_at) VALUES(?,?,?) ON CONFLICT(account_id) DO NOTHING',id,t,t).run();
     const s = {id,version,csrf:random(),exp:t+86400};
-    // Logging in schedules a read-only health check, never a step submission.
-    try { await requireMembership(env,id); await enqueue(env,{id,min_step:v.lo,max_step:v.hi},'check'); } catch { /* Inactive users can redeem a code after logging in. */ }
-    const res = json({ok:true}); setCookie(res, await seal(s, env.MASTER_SECRET, 'user-session-v2')); return res;
+    // Login succeeds independently of the optional read-only diagnostic.
+    let check;
+    try { check=await connectionCheck(env,id,{force:!previousAccount||!!previousAccount.needs_login}); }
+    catch(e) {check={state:e instanceof UserError&&e.status===403?'inactive':'unavailable'};}
+    const res = json({ok:true,check}); setCookie(res, await seal(s, env.MASTER_SECRET, 'user-session-v2')); return res;
   }
   const s = await session(request, env);
   if (path === '/api/status' && request.method === 'GET') return json({signed_in:!!s,csrf:s?.csrf,account:s ? publicAccount(s.account,await membership(env,s.id)) : null});
@@ -106,6 +111,7 @@ async function route(request, env) {
         if(!source)throw new UserError('执行记录不存在或暂时无法核对。',404);
       }
       await limit(env,'check:'+s.id,1,60);
+      if(!source){const check=await connectionCheck(env,s.id,{force:true});return json({ok:true,id:check.id,check},202);}
       return json({ok:true,id:await enqueue(env,s.account,source?'verify':'check',Date.now(),source)},202);
     }
     if (path === '/api/settings') {

@@ -22,7 +22,7 @@ export async function history(env, accountId, url) {
     COALESCE(SUM(verification='matched'),0) AS matched,
     COALESCE(SUM(status IN ('pending','queued','running') OR verification IN ('checking','waiting')),0) AS active
     FROM runs WHERE account_id=? AND day=? AND kind IN ('manual','schedule')`, accountId, beijing().slice(0,10)).first();
-  const check = await query(env, "SELECT status,message,observed_step,verification,day,created_at,finished_at FROM runs WHERE account_id=? AND kind='check' ORDER BY created_at DESC,id DESC LIMIT 1", accountId).first();
+  const check = await query(env, "SELECT status,message,observed_step,verification,day,created_at,finished_at FROM runs WHERE account_id=? AND kind='check' ORDER BY CASE WHEN status IN ('pending','queued','running') THEN 0 ELSE 1 END,created_at DESC,rowid DESC LIMIT 1", accountId).first();
   const access=await membership(env,accountId);
   const account=await query(env,'SELECT id,enabled,needs_login,min_step,max_step FROM accounts WHERE id=?',accountId).first();
   const latest=await query(env,"SELECT id,kind,status,verification,step,created_at,finished_at,message FROM runs WHERE account_id=? AND kind IN ('manual','schedule') ORDER BY created_at DESC,id DESC LIMIT 1",accountId).first();

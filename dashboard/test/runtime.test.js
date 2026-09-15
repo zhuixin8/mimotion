@@ -4,6 +4,7 @@ import {readFileSync,readdirSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
 import {seal} from '../src/security.js';
+import {connectionCheck} from '../dist/worker.js';
 
 test('workerd + D1 + queue: actual delivery, durable delayed checks and duplicate safety',{timeout:25000},async()=>{
  const day=new Date(Date.now()+28800000).toISOString().slice(0,10),now=Math.floor(Date.now()/1000);let posts=0,observed=1000;
@@ -43,5 +44,10 @@ test('workerd + D1 + queue: actual delivery, durable delayed checks and duplicat
   assert.equal((await db.prepare("SELECT verification FROM runs WHERE id='r'").first()).verification,'matched');
   assert.equal((await db.prepare('SELECT status FROM runs WHERE id=?').bind(children[1].id).first()).status,'skipped');
   await app.queue('jobs',[delivery('r'),delivery(children[0].id)]);assert.equal(posts,1);
+  const sent=[],diagnosticEnv={DB:db,JOBS:{send:async body=>sent.push(body)}};
+  const diagnostics=await Promise.all([connectionCheck(diagnosticEnv,'A'),connectionCheck(diagnosticEnv,'A',{force:true})]);
+  assert.equal(diagnostics[0].id,diagnostics[1].id);assert.equal(sent.length,1);
+  await db.prepare("UPDATE runs SET status='success',finished_at=?,checked_at=? WHERE id=?").bind(now,now,diagnostics[0].id).run();
+  assert.equal((await connectionCheck(diagnosticEnv,'A')).state,'cached');assert.equal(sent.length,1);
  }finally{await mf.dispose();}
 });

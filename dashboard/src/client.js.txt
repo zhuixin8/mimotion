@@ -66,7 +66,7 @@ async function runs(){
  const data=await api('/api/runs?'+params);if(!state?.signed_in||state.csrf!==session)return;
  if(data.runtime.plan)Object.assign(state.account,data.runtime.plan);syncAccess(data.membership);renderRuntime(data.runtime);const box=$('runs-list');const expanded=new Set([...box.querySelectorAll('details[open]')].map(e=>e.dataset.id));box.replaceChildren();
  $('stat-total').textContent=data.stats.total;$('stat-accepted').textContent=data.stats.accepted;$('stat-matched').textContent=data.stats.matched;
- const c=data.check;$('connection-result').textContent=!c?(state.account.membership.active?'尚未测试，点击「测试连接」检查连接。':'使用期有效后可测试账号连接。'):['pending','queued','running'].includes(c.status)?'正在测试连接，请稍候…':(c.status==='success'?'连接测试通过':'连接测试未通过')+' · '+c.message+(c.observed_step!==null?' '+c.day+' 云端：'+steps(c.observed_step):'')+' · '+when(c.finished_at||c.created_at);
+ const c=data.check;$('connection-result').textContent=!c?(state.account.membership.active?'尚未测试，点击「测试连接」检查连接。':'使用期有效后可测试账号连接。'):['pending','queued','running'].includes(c.status)?({pending:'测试任务已保存，等待队列恢复；无需重复点击。',queued:'连接测试排队中，请稍候…',running:'正在测试连接，请稍候…'}[c.status]):(c.status==='success'?'连接测试通过':'连接测试未通过')+' · '+c.message+(c.observed_step!==null?' '+c.day+' 云端：'+steps(c.observed_step):'')+' · '+when(c.finished_at||c.created_at);
  hasMore=data.has_more;$('prev-page').hidden=page===0;$('next-page').hidden=!hasMore;$('page-label').textContent='第 '+(page+1)+' 页';
  const active=data.stats.active||data.runs.some(r=>['pending','queued','running'].includes(r.status));nextPoll=Date.now()+(active?3000:30000);
  $('history-update').textContent='更新于 '+when(Math.floor(Date.now()/1000))+(page===0?(active?' · 执行中每 3 秒刷新':' · 每 30 秒刷新'):' · 翻页期间暂停自动刷新');
@@ -89,10 +89,20 @@ async function runs(){
  }
 }
 $('toggle-password').onclick=()=>{const p=$('password');p.type=p.type==='password'?'text':'password';$('toggle-password').textContent=p.type==='password'?'显示':'隐藏';};
-$('login-form').onsubmit=e=>{e.preventDefault();action(async()=>{const data={account:$('account').value,password:$('password').value,min_step:18000,max_step:25000,consent:$('consent').checked};$('password').value='';notice('正在验证 Zepp Life，请稍候…');await api('/api/login',data);resetHistory();currentView='overview';await load();if(!state.account.membership.active)showView('membership');notice(state.account.membership.active?'登录成功，已安排只读连接测试。':'登录成功，请先兑换激活码开通使用期。');});};
+function checkNotice(check){
+ const state=check?.state;
+ if(state==='completed')return '连接测试已通过，结果与检查时间见「账号连接」。';
+ if(state==='cached')return '上次连接测试已通过'+(check.checked_at?'（'+when(check.checked_at)+'）':'')+'，本次展示已有结果。';
+ if(state==='running')return '已有连接测试正在执行，已复用该任务。';
+ if(state==='queued')return check.reused?'已有连接测试排队中，已复用该任务。':'已安排只读连接测试，不会修改步数。';
+ if(state==='pending')return '测试任务已保存，等待队列恢复；无需重复点击。';
+ if(state==='inactive')return '使用期有效后可测试连接。';
+ return '暂时无法确认测试任务状态，可稍后查看记录或点击「测试连接」。';
+}
+$('login-form').onsubmit=e=>{e.preventDefault();action(async()=>{const data={account:$('account').value,password:$('password').value,min_step:18000,max_step:25000,consent:$('consent').checked};$('password').value='';notice('正在验证 Zepp Life，请稍候…');const login=await api('/api/login',data);resetHistory();currentView='overview';await load();if(!state.account.membership.active)showView('membership');notice(state.account.membership.active?'登录成功。'+checkNotice(login.check):state.account.membership.suspended?'登录成功，账号已停用，请联系管理员。':'登录成功，请先兑换激活码开通使用期。');});};
 $('settings-form').onsubmit=e=>{e.preventDefault();action(async()=>{await api('/api/settings',{min_step:$('min-step').value,max_step:$('max-step').value,enabled:$('enabled').checked});await load();notice('计划已保存。');});};
 $('redeem-form').onsubmit=e=>{e.preventDefault();action(async()=>{const code=$('activation-code').value;const r=await api('/api/redeem',{code});$('activation-code').value='';await load();notice(r.already_redeemed?'此码此前已兑换，期限没有重复增加。':'激活成功，已增加 '+r.receipt.duration_days+' 天使用期；到期时间：'+when(r.membership.expires_at)+'。');});};
-$('test-connection').onclick=()=>action(async()=>{await api('/api/check',{});resetHistory();await runs();notice('已安排连接测试，不会修改步数。');});
+$('test-connection').onclick=()=>action(async()=>{const result=await api('/api/check',{});resetHistory();await runs();notice(checkNotice(result.check));});
 $('run-now').onclick=()=>action(async()=>{if(String(state.account.min_step)!==$('min-step').value||String(state.account.max_step)!==$('max-step').value)throw new Error('步数范围有未保存的修改，请先保存计划。');await api('/api/run',{});resetHistory();await runs();notice('任务已加入队列，将提交步数并读回核对。请在「执行记录」查看进度。');});
 $('refresh-runs').onclick=()=>action(runs);
 $('history-filter').onsubmit=e=>{e.preventDefault();action(async()=>{page=0;await runs();});};

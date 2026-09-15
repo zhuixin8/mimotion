@@ -62,10 +62,10 @@ export async function consume(message, env) {
     claimed=true;run.attempt_count++;
     const tokens=await open(account.credentials,env.MASTER_SECRET,'zepp:'+account.id);
     try{await refreshToken(tokens);}catch(e){
-      if(e instanceof UserError&&e.status===401)await query(env,'UPDATE accounts SET needs_login=1,enabled=0 WHERE id=? AND lease_id=?',account.id,lease).run();
+      if(e instanceof UserError&&e.status===401)await query(env,'UPDATE accounts SET needs_login=1,enabled=0 WHERE id=? AND lease_id=? AND session_version=?',account.id,lease,account.session_version).run();
       throw e;
     }
-    await query(env,'UPDATE accounts SET credentials=?,updated_at=? WHERE id=? AND lease_id=?',await seal(tokens,env.MASTER_SECRET,'zepp:'+account.id),seconds(),account.id,lease).run();
+    await query(env,'UPDATE accounts SET credentials=?,updated_at=? WHERE id=? AND lease_id=? AND session_version=?',await seal(tokens,env.MASTER_SECRET,'zepp:'+account.id),seconds(),account.id,lease,account.session_version).run();
     if(run.kind==='check'){
       await checkConnection(tokens);
       let observed=null;try{observed=await readDaySteps(tokens,run.day);}catch{}

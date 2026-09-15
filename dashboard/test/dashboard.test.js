@@ -5,9 +5,67 @@ import {readFileSync} from 'node:fs';
 import worker from '../dist/worker.js';
 import {seal,open,fetchJSON} from '../src/security.js';
 import {loginZepp,validate} from '../src/zepp.js';
+import {connectionCheck} from '../dist/worker.js';
 const origin='https://mimotion.test';
 const time=()=>Math.floor(Date.now()/1000);
 const day=()=>new Date(Date.now()+28800000).toISOString().slice(0,10);
+test('login during a running read-only check reuses it and old work cannot overwrite renewed credentials',async(t)=>{
+ for(const fail of [false,true]){
+  const env=environment();const mock=zeppMock(t);env.db.prepare('UPDATE site_settings SET new_user_gift_days=7').run();
+  const input={account:'running@example.com',password:'dummy',consent:true,min_step:1,max_step:2};const first=await (await api(env,'/api/login',input)).json();
+  const normal=globalThis.fetch;let release,started;const gate=new Promise(r=>release=r),ready=new Promise(r=>started=r);
+  t.mock.method(globalThis,'fetch',async(url,opts)=>{if(String(url).includes('/app_tokens')){started();await gate;return fail?Response.json({result:'fail'},{status:401}):Response.json({result:'ok',token_info:{app_token:'stale-job-token'}});}return normal(url,opts);});
+  const running=consume(env,msg(first.check.id));await ready;
+  try{
+   const res=await api(env,'/api/login',input);assert.equal(res.status,200);const data=await res.json();assert.equal(data.check.state,'running');assert.equal(data.check.id,first.check.id);
+  }finally{release();await running;}
+  const accountRow=env.db.prepare('SELECT * FROM accounts').get(),tokens=await open(accountRow.credentials,env.MASTER_SECRET,'zepp:'+accountRow.id);
+  assert.equal(tokens.app_token,'app-token');assert.equal(accountRow.needs_login,0);assert.equal(env.db.prepare('SELECT COUNT(*) n FROM runs').get().n,1);
+  assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,0);
+ }
+});
+test('login reuses recent success; credential recovery and manual checks bypass that cache',async(t)=>{
+ const env=environment(),mock=zeppMock(t);env.db.prepare('UPDATE site_settings SET new_user_gift_days=7').run();
+ const input={account:'cache@example.com',password:'dummy',consent:true,min_step:1,max_step:2};
+ const first=await api(env,'/api/login',input);assert.equal(first.status,200);const a=await first.json();assert.equal(a.check.state,'queued');assert.equal(a.check.reused,false);
+ await consume(env,msg(a.check.id));const second=await api(env,'/api/login',input),b=await second.json();assert.equal(b.check.state,'cached');assert.equal(b.check.id,a.check.id);assert.ok(b.check.checked_at);
+ assert.equal(env.db.prepare("SELECT COUNT(*) n FROM runs WHERE kind='check'").get().n,1);
+ assert.equal(mock.calls.filter(c=>c.url.includes('/registrations/tokens')).length,2);
+ env.db.prepare('UPDATE accounts SET needs_login=1').run();
+ const recovered=await api(env,'/api/login',input),c=await recovered.json();assert.equal(c.check.state,'queued');assert.notEqual(c.check.id,a.check.id);await consume(env,msg(c.check.id));
+ const cookie=recovered.headers.get('set-cookie').split(';')[0],s=await (await api(env,'/api/status',undefined,{cookie})).json(),session={cookie,csrf:s.csrf};
+ const manual=await api(env,'/api/check',{},session);assert.equal(manual.status,202);const m=await manual.json();assert.equal(m.check.state,'queued');assert.notEqual(m.id,c.check.id);
+ assert.equal((await api(env,'/api/check',{},session)).status,429);assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,0);
+});
+test('connection cache expires at 30 minutes, rejects prior-day readings and honors the latest failure',async()=>{
+ for(const scenario of ['recent','expired','previous-day','failed-latest']){
+  const env=environment();await account(env,'A');addRun(env,'ok','A','check','success');
+  env.db.prepare("UPDATE runs SET finished_at=?,created_at=?,day=? WHERE id='ok'").run(time()-(scenario==='expired'?1800:60),time()-120,scenario==='previous-day'?'2000-01-01':day());
+  if(scenario==='failed-latest')addRun(env,'failed','A','check','failed');
+  const result=await connectionCheck(env,'A');assert.equal(result.state,scenario==='recent'?'cached':'queued',scenario);
+  assert.equal(env.sent.length,scenario==='recent'?0:1,scenario);
+ }
+});
+test('concurrent login and manual diagnostics reuse outstanding tasks across minute boundaries',async()=>{
+ for(const status of ['pending','queued','running']){
+  const env=environment();await account(env,'A');addRun(env,'existing','A','check',status);env.db.prepare("UPDATE runs SET created_at=?,delivered_at=? WHERE id='existing'").run(time()-130,status==='queued'?time()-130:0);
+  if(status==='pending')env.JOBS.send=async()=>{throw Error('queue unavailable');};
+  const checks=await Promise.all([connectionCheck(env,'A'),connectionCheck(env,'A',{force:true})]);assert.ok(checks.every(r=>r.id==='existing'&&r.reused));
+  assert.equal(env.db.prepare('SELECT COUNT(*) n FROM runs').get().n,1);
+  const history=await (await api(env,'/api/runs',undefined,await account(env,'B'))).json();assert.equal(history.check,null);
+ }
+ const env=environment();await account(env,'A');const checks=await Promise.all(Array.from({length:6},()=>connectionCheck(env,'A',{force:true})));
+ assert.equal(new Set(checks.map(c=>c.id)).size,1);assert.equal(env.sent.length,1);
+});
+test('login diagnostic reports durable queue failures and database failures without failing login',async(t)=>{
+ const env=environment();zeppMock(t);env.db.prepare('UPDATE site_settings SET new_user_gift_days=7').run();
+ const input={account:'failure@example.com',password:'dummy',consent:true,min_step:1,max_step:2};env.JOBS.send=async()=>{throw Error('private queue error');};
+ let res=await api(env,'/api/login',input);assert.equal(res.status,200);let data=await res.json();assert.equal(data.check.state,'pending');assert.ok(data.check.id);
+ res=await api(env,'/api/login',input);data=await res.json();assert.equal(data.check.state,'pending');assert.equal(data.check.reused,true);assert.equal(env.db.prepare('SELECT COUNT(*) n FROM runs').get().n,1);
+ env.db.prepare("UPDATE runs SET status='failed'").run();env.db.exec("CREATE TRIGGER fail_diagnostic BEFORE INSERT ON runs BEGIN SELECT RAISE(ABORT,'private DB error'); END;");
+ res=await api(env,'/api/login',input);assert.equal(res.status,200);data=await res.json();assert.equal(data.check.state,'unavailable');assert.ok(!JSON.stringify(data).includes('private'));assert.ok(res.headers.get('set-cookie'));
+ env.db.prepare('UPDATE memberships SET expires_at=0').run();res=await api(env,'/api/login',input);assert.equal((await res.json()).check.state,'inactive');
+});
 test('registration gift is admin controlled, bounded, revision guarded and publicly described',async()=>{
  const env=environment(),admin=await administrator(env),user=await account(env,'existing');
  const initial=await (await api(env,'/api/zhuixins_x/site',undefined,admin)).json();assert.equal(initial.new_user_gift_days,0);
