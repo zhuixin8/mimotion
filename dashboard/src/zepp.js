@@ -39,7 +39,7 @@ export async function loginZepp(data) {
   const info = result.data.token_info;
   if (!result.response.ok || result.data.result !== 'ok' || !info?.login_token || !info?.app_token || !info?.user_id) throw new UserError('Zepp 客户端授权失败，未获得完整登录凭据。', 422);
   const stamp = String(Date.now());
-  const tokens = {access_token: access, login_token: info.login_token, app_token: info.app_token, user_id: info.user_id, device_id: device, access_token_time: stamp, login_token_time: stamp, app_token_time: stamp};
+  const tokens = {access_token: access, login_type: phone ? 'huami_phone' : 'email', login_token: info.login_token, app_token: info.app_token, user_id: info.user_id, device_id: device, access_token_time: stamp, login_token_time: stamp, app_token_time: stamp};
   try {
     const deviceResult = await fetchJSON('https://api-mifit-cn.huami.com/v1/device/binds.json?userid=' + encodeURIComponent(info.user_id), {headers: {apptoken: info.app_token, 'user-agent': headers['user-agent']}});
     const bound = deviceResult.data.items?.find(item => item.deviceType === 0 && (item.deviceId || item.mac));

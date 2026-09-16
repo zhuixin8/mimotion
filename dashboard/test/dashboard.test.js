@@ -9,6 +9,50 @@ import {connectionCheck} from '../dist/worker.js';
 const origin='https://mimotion.test';
 const time=()=>Math.floor(Date.now()/1000);
 const day=()=>new Date(Date.now()+28800000).toISOString().slice(0,10);
+
+test('0105 recovery verifies identity, persists credentials and submits only once',async(t)=>{
+ for(const type of [undefined,'huami_phone']){
+  const env=environment();await account(env,'A');addRun(env,'recover','A');
+  const old=await open(env.db.prepare('SELECT credentials FROM accounts').get().credentials,env.MASTER_SECRET,'zepp:A');
+  Object.assign(old,{access_token:'dummy-access',device_id:'dummy-device',login_type:type});
+  env.db.prepare('UPDATE accounts SET credentials=?').run(await seal(old,env.MASTER_SECRET,'zepp:A'));
+  const mock=zeppMock(t,{userId:'A'}),normal=globalThis.fetch;let grants=0;
+  t.mock.method(globalThis,'fetch',async(url,opts)=>{
+   if(String(url).includes('/app_tokens'))return Response.json({error_code:'0105'});
+   if(String(url).includes('/v2/client/login')){grants++;assert.equal(opts.body.get('third_name'),type||'email');assert.equal(opts.body.get('allow_registration'),'false');}
+   return normal(url,opts);
+  });
+  await consume(env,msg('recover'));
+  assert.equal(grants,1);assert.equal(env.db.prepare('SELECT status FROM runs').get().status,'success');
+  assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,1);
+  const row=env.db.prepare('SELECT * FROM accounts').get(),fresh=await open(row.credentials,env.MASTER_SECRET,'zepp:A');
+  assert.equal(fresh.app_token,'app-token');assert.equal(fresh.login_token,'login-token');assert.equal(fresh.login_type,type||'email');assert.equal(row.needs_login,0);assert.equal(row.enabled,1);
+ }
+});
+
+test('failed recovery never submits or stores partial or mismatched credentials',async(t)=>{
+ for(const scenario of ['mismatch','incomplete','rejected','outage','missing-access']){
+  const env=environment();await account(env,'A');addRun(env,'recover','A');
+  const old=await open(env.db.prepare('SELECT credentials FROM accounts').get().credentials,env.MASTER_SECRET,'zepp:A');
+  if(scenario!=='missing-access')Object.assign(old,{access_token:'dummy-access',device_id:'dummy-device'});
+  const sealed=await seal(old,env.MASTER_SECRET,'zepp:A');env.db.prepare('UPDATE accounts SET credentials=?').run(sealed);
+  const mock=zeppMock(t),normal=globalThis.fetch;let grants=0;
+  t.mock.method(globalThis,'fetch',async(url,opts)=>{
+   if(String(url).includes('/app_tokens'))return Response.json({error_code:'0105'});
+   if(String(url).includes('/v2/client/login')){
+    grants++;
+    if(scenario==='outage')return Response.json({message:'unavailable'},{status:503});
+    if(scenario==='rejected')return Response.json({result:'fail'},{status:401});
+    return Response.json({result:'ok',token_info:{user_id:'B',app_token:'partial',...(scenario==='mismatch'?{login_token:'wrong-user'}:{})}});
+   }
+   return normal(url,opts);
+  });
+  await consume(env,msg('recover'));
+  assert.equal(grants,scenario==='missing-access'?0:1);assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,0);
+  const row=env.db.prepare('SELECT * FROM accounts').get();assert.equal(row.credentials,sealed);
+  assert.equal(row.needs_login,['mismatch','rejected','missing-access'].includes(scenario)?1:0,scenario);
+ }
+});
 test('login during a running read-only check reuses it and old work cannot overwrite renewed credentials',async(t)=>{
  for(const fail of [false,true]){
   const env=environment();const mock=zeppMock(t);env.db.prepare('UPDATE site_settings SET new_user_gift_days=7').run();
