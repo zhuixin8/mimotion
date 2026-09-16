@@ -1,6 +1,6 @@
 import {seal, open, UserError} from './security.js';
 import {refreshToken, submitSteps} from './steps.js';
-import {readDaySteps, checkConnection, outcome, verificationText} from './verification.js';
+import {readDaySteps, readDayEvidence, unavailableEvidence, evidenceOutcome, evidenceText, checkConnection, verificationText} from './verification.js';
 import {requireMembership} from './licensing.js';
 import {dispatch, armVerification, settleVerification} from './recovery.js';
 export {scheduled} from './recovery.js';
@@ -68,24 +68,25 @@ export async function consume(message, env) {
     await query(env,'UPDATE accounts SET credentials=?,updated_at=? WHERE id=? AND lease_id=? AND session_version=?',await seal(tokens,env.MASTER_SECRET,'zepp:'+account.id),seconds(),account.id,lease,account.session_version).run();
     if(run.kind==='check'){
       await checkConnection(tokens);
-      let observed=null;try{observed=await readDaySteps(tokens,run.day);}catch{}
-      await query(env,'UPDATE runs SET observed_step=?,verification=?,checked_at=? WHERE id=? AND execution_id=?',observed,observed===null?'unavailable':'readable',seconds(),run.id,lease).run();
-      await finish('success',observed===null?'账号连接正常；当天步数暂时不可读。本次未修改步数。':'账号连接正常，已读取当天步数。本次未修改步数。');return;
+      let evidence=unavailableEvidence();try{evidence=await readDayEvidence(tokens,run.day);}catch{}
+      const observed=evidence.observed;
+      await query(env,'UPDATE runs SET observed_step=?,summary_step=?,detail_step=?,evidence_state=?,verification=?,checked_at=? WHERE id=? AND execution_id=?',observed,evidence.summary,evidence.detail,evidence.state,observed===null?evidenceOutcome(evidence,0):'readable',seconds(),run.id,lease).run();
+      await finish('success','账号连接正常；'+evidenceText(evidence)+'。本次未修改步数。');return;
     }
     if(run.kind==='verify'){
       const source=await query(env,"SELECT * FROM runs WHERE id=? AND account_id=? AND kind IN ('manual','schedule') AND status IN ('success','unknown')",run.parent_id,account.id).first();
       if(!source){await finish('skipped','原执行记录不存在或无法核对');return;}
       if(run.auto_round&&source.verification==='matched'){await finish('skipped','此前已确认云端达到目标，无需再次查询');return;}
-      let observed=null;try{observed=await readDaySteps(tokens,source.day);}catch(e){if(e.retryable)throw e;}
-      const verified=outcome(observed,source.step),checked=seconds();
+      let evidence=unavailableEvidence();try{evidence=await readDayEvidence(tokens,source.day);}catch(e){if(e.retryable)throw e;}
+      const observed=evidence.observed,verified=evidenceOutcome(evidence,source.step),checked=seconds();
       // Keep waiting while another automatic check remains; matched evidence is not overwritten by an older check.
       await env.DB.batch([
-        query(env,`UPDATE runs SET observed_step=?,verification=CASE WHEN ?='matched' THEN 'matched' WHEN EXISTS(SELECT 1 FROM runs child WHERE child.parent_id=runs.id AND child.id!=? AND child.auto_round>0 AND child.status IN ('pending','queued','running')) THEN 'waiting' ELSE ? END,checked_at=?
-          WHERE id=? AND account_id=?`,observed,verified,run.id,verified,checked,source.id,account.id),
-        query(env,'UPDATE runs SET observed_step=?,verification=?,checked_at=? WHERE id=? AND execution_id=?',observed,verified,checked,run.id,lease)
+        query(env,`UPDATE runs SET observed_step=?,summary_step=?,detail_step=?,evidence_state=?,verification=CASE WHEN ?='matched' THEN 'matched' WHEN EXISTS(SELECT 1 FROM runs child WHERE child.parent_id=runs.id AND child.id!=? AND child.auto_round>0 AND child.status IN ('pending','queued','running')) THEN 'waiting' ELSE ? END,checked_at=?
+          WHERE id=? AND account_id=?`,observed,evidence.summary,evidence.detail,evidence.state,verified,run.id,verified,checked,source.id,account.id),
+        query(env,'UPDATE runs SET observed_step=?,summary_step=?,detail_step=?,evidence_state=?,verification=?,checked_at=? WHERE id=? AND execution_id=?',observed,evidence.summary,evidence.detail,evidence.state,verified,checked,run.id,lease)
       ]);
       if(verified==='matched')await query(env,"UPDATE runs SET status='skipped',message='云端已达到目标，取消后续自动核对',finished_at=?,updated_at=? WHERE parent_id=? AND auto_round>0 AND status IN ('pending','queued')",seconds(),seconds(),source.id).run();
-      await finish('success',verificationText(verified)+'。本次只查询，未重新提交。');return;
+      await finish('success',(observed===null?evidenceText(evidence):verificationText(verified))+'。本次只查询，未重新提交。');return;
     }
     let before=null;try{before=await readDaySteps(tokens,run.day);}catch(e){if(e.retryable)throw e;}
     if(run.day!==beijing().slice(0,10)){await finish('skipped','已跨天，未提交');return;}
@@ -108,9 +109,10 @@ export async function consume(message, env) {
     }
     const submitted=await query(env,'SELECT status FROM runs WHERE id=?',run.id).first();
     if(['success','unknown'].includes(submitted.status)){
-      let observed=null;try{observed=await readDaySteps(tokens,run.day);}catch{}
-      await query(env,'UPDATE runs SET observed_step=?,verification=?,checked_at=? WHERE id=? AND execution_id=?',observed,outcome(observed,run.step),seconds(),run.id,lease).run();
-      if(outcome(observed,run.step)!=='matched')await armVerification(env,run.id);
+      let evidence=unavailableEvidence();try{evidence=await readDayEvidence(tokens,run.day);}catch{}
+      const observed=evidence.observed;
+      await query(env,'UPDATE runs SET observed_step=?,summary_step=?,detail_step=?,evidence_state=?,verification=?,checked_at=? WHERE id=? AND execution_id=?',observed,evidence.summary,evidence.detail,evidence.state,evidenceOutcome(evidence,run.step),seconds(),run.id,lease).run();
+      if(evidenceOutcome(evidence,run.step)!=='matched')await armVerification(env,run.id);
     }
   } catch(e){
     if(!claimed)throw e;

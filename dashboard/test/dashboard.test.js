@@ -1,3 +1,4 @@
+import {minuteFixture} from './minute-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
@@ -144,7 +145,7 @@ test('registration gift audit failure rolls back the grant; retry credits once',
  assert.equal(env.db.prepare("SELECT COUNT(*) n FROM admin_audit WHERE action='registration_gift'").get().n,1);
 });
 function environment(){
- const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');for(const file of ['0001_multiuser.sql','0002_delivery.sql','0003_verification.sql','0004_saas.sql','0005_operations.sql','0006_reliability.sql','0007_registration_gift.sql'])db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
+ const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');for(const file of ['0001_multiuser.sql','0002_delivery.sql','0003_verification.sql','0004_saas.sql','0005_operations.sql','0006_reliability.sql','0007_registration_gift.sql','0008_step_evidence.sql'])db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
  const env={APP_ORIGIN:origin,MASTER_SECRET:'test-secret-only',MAX_ACCOUNTS:'200',db,sent:[],queries:0};
  function statement(sql,args=[]){return {bind(...v){return statement(sql,v);},async first(){env.queries++;return db.prepare(sql).get(...args)||null;},async all(){env.queries++;return {results:db.prepare(sql).all(...args)};},async run(){env.queries++;const r=db.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}};}};}
  env.DB={prepare:sql=>statement(sql),batch:async statements=>{db.exec('BEGIN');try{const r=await Promise.all(statements.map(s=>s.run()));db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}};
@@ -201,7 +202,7 @@ test('delayed checks update the source, converge and never repeat POST',async(t)
  const children=env.db.prepare('SELECT * FROM runs WHERE parent_id=? ORDER BY auto_round').all('r');assert.equal(children.length,2);assert.ok(children[0].next_attempt_at>=time()+29);assert.ok(children[1].next_attempt_at>=time()+119);
  const early=msg(children[0].id);await consume(env,early);assert.equal(early.retried,true);
  env.db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').run(children[0].id);await consume(env,msg(children[0].id));assert.equal(env.db.prepare("SELECT verification FROM runs WHERE id='r'").get().verification,'waiting');
- const normal=globalThis.fetch;t.mock.method(globalThis,'fetch',async(url,opts={})=>String(url).includes('/band_data')&&opts.method!=='POST'?Response.json({message:'success',data:[{date:day(),summary:{stp:{ttl:25000}}}]}):normal(url,opts));
+ const normal=globalThis.fetch;t.mock.method(globalThis,'fetch',async(url,opts={})=>String(url).includes('/band_data')&&opts.method!=='POST'?Response.json({message:'success',data:[{date:day(),data:minuteFixture(25000),summary:{stp:{ttl:25000}}}]}):normal(url,opts));
  env.db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').run(children[1].id);await consume(env,msg(children[1].id));const r=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(r.verification,'matched');assert.equal(r.status,'success');assert.equal(r.observed_step,25000);
  await consume(env,msg(children[1].id));assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,1);
 });
@@ -250,7 +251,7 @@ function zeppMock(t,options={}){const calls=[];const cloud=new Map();let active=
  if(url.includes('/band_data.json')&&opts.method!=='POST'){
    if(options.unreadable)return Response.json({message:'success',data:[]});
    const q=new URL(url).searchParams, uid=q.get('userid');
-   return Response.json({message:'success',data:[{date_time:q.get('from_date'),summary:btoa(JSON.stringify({stp:{ttl:options.below?1000:cloud.get(uid)||1000}}))}]});
+   return Response.json({message:'success',data:[{date_time:q.get('from_date'),data:options.summaryOnly?undefined:minuteFixture(options.detail??(options.below?1000:cloud.get(uid)||1000)),summary:btoa(JSON.stringify({stp:{ttl:options.below?1000:cloud.get(uid)||1000}}))}]});
  }
  if(url.includes('/band_data.json')){active++;maxActive=Math.max(active,maxActive);await new Promise(r=>setTimeout(r,15));active--;if(options.timeout)throw new Error('private-token-upstream');cloud.set(opts.body.get('userid'),JSON.parse(JSON.parse(opts.body.get('data_json'))[0].summary).stp.ttl);return Response.json({message:'success'});}
  throw new Error('Unexpected fetch');});return {calls,get maxActive(){return maxActive;}};}
@@ -381,4 +382,35 @@ test('exception filters distinguish delayed tasks and credentials; pagination is
  const a=await (await api(env,'/api/zhuixins_x/issues',undefined,admin)).json(),b=await (await api(env,'/api/zhuixins_x/issues?page=1',undefined,admin)).json();assert.equal(a.issues.length,20);assert.equal(a.has_more,true);assert.equal(b.issues.length,6);
  for(const kind of ['credentials','delayed']){const d=await (await api(env,'/api/zhuixins_x/issues?filter='+kind,undefined,admin)).json();assert.equal(d.issues.length,1);assert.equal(d.issues[0].category,kind);}
  assert.equal((await api(env,'/api/zhuixins_x/issues?filter=bad',undefined,admin)).status,400);
+});
+
+
+test('summary/detail mismatch survives delayed recovery without a second POST or false success',async(t)=>{
+ const env=environment();await account(env,'A');addRun(env,'mismatch','A');const mock=zeppMock(t,{detail:125});
+ await consume(env,msg('mismatch'));
+ let source=env.db.prepare("SELECT * FROM runs WHERE id='mismatch'").get();
+ assert.equal(source.summary_step,20000);assert.equal(source.detail_step,125);assert.equal(source.observed_step,null);assert.equal(source.evidence_state,'inconsistent');
+ const children=env.db.prepare("SELECT id FROM runs WHERE parent_id='mismatch' ORDER BY auto_round").all();
+ env.db.prepare("UPDATE runs SET next_attempt_at=0 WHERE parent_id='mismatch'").run();
+ for(const child of children)await consume(env,msg(child.id));
+ source=env.db.prepare("SELECT * FROM runs WHERE id='mismatch'").get();
+ assert.equal(source.verification,'inconsistent');assert.equal(source.observed_step,null);
+ assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,1);
+});
+
+test('summary-only success responses never become matched after all delayed checks',async(t)=>{
+ const env=environment();await account(env,'A');addRun(env,'summary','A');zeppMock(t,{summaryOnly:true});await consume(env,msg('summary'));
+ env.db.prepare("UPDATE runs SET next_attempt_at=0 WHERE parent_id='summary'").run();
+ for(const r of env.db.prepare("SELECT id FROM runs WHERE parent_id='summary' ORDER BY auto_round").all())await consume(env,msg(r.id));
+ const source=env.db.prepare("SELECT * FROM runs WHERE id='summary'").get();
+ assert.equal(source.verification,'summary_only');assert.equal(source.summary_step,20000);assert.equal(source.observed_step,null);
+});
+
+
+test('latest inconsistent check is displayed instead of a stale earlier success',async()=>{
+ const env=environment(),a=await account(env,'A');addRun(env,'old-ok','A','manual','success');addRun(env,'new-mismatch','A','check','success');
+ env.db.prepare("UPDATE runs SET observed_step=8472,summary_step=8472,detail_step=8472,evidence_state='consistent',verification='matched',checked_at=? WHERE id='old-ok'").run(time()-10);
+ env.db.prepare("UPDATE runs SET summary_step=8472,detail_step=125,evidence_state='inconsistent',verification='inconsistent',checked_at=? WHERE id='new-mismatch'").run(time());
+ const data=await(await api(env,'/api/runs?filter=attention',undefined,a)).json();
+ assert.equal(data.runtime.reading.evidence_state,'inconsistent');assert.equal(data.runtime.reading.observed_step,null);assert.equal(data.runtime.reading.detail_step,125);assert.equal(data.runs.length,1);
 });

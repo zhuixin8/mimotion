@@ -40,11 +40,12 @@ let scheduleRuntime=null,scheduleReceivedAt=0;
 function renderRuntime(runtime){
  scheduleRuntime=runtime;scheduleReceivedAt=Date.now();renderSchedule();
  const status={pending:'等待排队',queued:'排队中',running:'执行中',success:'接口已接收',failed:'执行失败',unknown:'结果待确认',skipped:'已跳过'};
- const r=runtime.latest;$('runtime-latest').textContent=r?(r.verification==='matched'?'云端达到目标':status[r.status]||r.status):'尚未执行';
+ const r=runtime.latest;$('runtime-latest').textContent=r?({matched:'汇总与明细达到目标',inconsistent:'汇总与明细不一致',summary_only:'仅汇总已读取'}[r.verification]||status[r.status]||r.status):'尚未执行';
  $('runtime-latest-time').textContent=r?when(r.finished_at||r.created_at)+' · '+(r.kind==='manual'?'手动':'自动'):'可先测试连接，再执行一次';
  $('runtime-next').textContent=runtime.next.at?when(runtime.next.at):'暂无安排';$('runtime-next-reason').textContent=runtime.next.reason;
- $('runtime-reading').textContent=runtime.reading?steps(runtime.reading.observed_step):'尚未读取';
- $('runtime-reading-time').textContent=runtime.reading?'数据日期 '+runtime.reading.day+' · 读取于 '+when(runtime.reading.checked_at):'测试连接后显示云端读数';
+ const reading=runtime.reading;
+ $('runtime-reading').textContent=reading?(reading.observed_step!==null?steps(reading.observed_step):reading.evidence_state==='inconsistent'?'汇总与明细不一致':reading.evidence_state==='summary_only'?'仅有汇总，未核实':'暂时无法核实'):'尚未读取';
+ $('runtime-reading-time').textContent=runtime.reading?'数据日期 '+runtime.reading.day+' · 读取于 '+when(runtime.reading.checked_at)+(reading.evidence_state==='inconsistent'||reading.evidence_state==='summary_only'?' · 汇总 '+steps(reading.summary_step)+' / 明细 '+steps(reading.detail_step):''):'测试连接后显示云端读数';
 }
 function renderSchedule(){
  if(!state?.signed_in||!scheduleRuntime)return;
@@ -78,7 +79,7 @@ function renderSchedule(){
 $('enabled').addEventListener('change',renderSchedule);
 async function licenses(){const d=await api('/api/license');syncAccess(d.membership);const box=$('redemption-list');box.replaceChildren();if(!d.redemptions.length)box.textContent='暂无激活码兑换记录。';for(const r of d.redemptions){const item=element('div',undefined,'run');item.textContent=r.hint+' · '+r.duration_days+' 天 · '+when(r.created_at)+' · 兑换后到期 '+when(r.new_expiry);box.append(item);}}
 const errorLabels={network_timeout:'连接超时',rate_limited:'请求受限',upstream_unavailable:'远端服务暂时不可用',response_format:'接口响应格式变化',execution_interrupted:'执行中断',delivery_exhausted:'投递恢复次数已用尽',delivery_delayed:'队列处理延迟',submission_uncertain:'提交结果待确认',credentials_expired:'登录凭据过期',execution_failed:'执行异常'};
-const verifyLabels={waiting:'等待云端同步，将自动只读核对',checking:'正在读回核对',not_checked:'尚未核对',matched:'云端步数已达到目标',below_target:'云端步数暂未达到目标，可稍后核对',unavailable:'暂未读回步数，效果尚未核实',readable:'当天步数可读取'};
+const verifyLabels={inconsistent:'汇总与分钟明细不一致，尚未确认效果',summary_only:'仅有汇总，分钟明细未核实',waiting:'等待云端同步，将自动只读核对',checking:'正在读回核对',not_checked:'尚未核对',matched:'云端汇总与明细一致且达到目标',below_target:'云端步数暂未达到目标，可稍后核对',unavailable:'暂未读回步数，效果尚未核实',readable:'当天步数可读取'};
 const notice=createNotice($('notice'));
 async function api(path,data){
  const response=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json','X-CSRF-Token':state?.csrf||''},body:data===undefined?undefined:JSON.stringify(data),credentials:'same-origin'});
@@ -118,10 +119,11 @@ async function runs(){
   const row=element('article',undefined,'run-record'),head=element('div',undefined,'record-head');
   head.append(element('div',names[r.kind]+(check?'':' · 目标 '+steps(r.step)),'record-title'),element('span',r.verification==='matched'?'云端达到目标':states[r.status]||r.status,'badge '+(r.verification==='matched'?'good':['failed','unknown'].includes(r.status)?'attention':'')));
   row.append(head,element('div',when(r.created_at)+' · 数据日期 '+r.day,'record-meta'),element('p',r.message+(diagnostic?'':' · '+(verifyLabels[r.verification]||'尚未核对')),'record-result'));
+  if(r.evidence_state==='inconsistent'||r.evidence_state==='summary_only')row.append(element('p','汇总：'+steps(r.summary_step)+' · 分钟明细：'+steps(r.detail_step)+' · 尚未确认 App / 微信同步','record-result'));
   const detail=element('details');detail.dataset.id=r.id;detail.open=expanded.has(r.id);detail.append(element('summary','查看测试过程与步数对比'));
   const grid=element('div',undefined,'record-details');
   const diff=typeof r.before_step==='number'&&typeof r.observed_step==='number'?((r.observed_step-r.before_step>=0?'+':'')+(r.observed_step-r.before_step)+' 步'):'无法比较';
-  for(const [label,value] of [['任务编号',r.id],['开始 / 完成',when(r.started_at)+' / '+when(r.finished_at)],['提交前读数',check||verification?'本次不提交':steps(r.before_step)],['核对时云端读数',steps(r.observed_step)],['读数变化',diagnostic?'本次只查询':diff],['核对结果',verifyLabels[r.verification]||'尚未核对'],['最近核对时间',when(r.checked_at)],['执行尝试',String(r.attempt_count||0)+' 次'],['异常分类',errorLabels[r.error_code]||(r.error_code?'执行异常':'无')],['预计重试 / 核对',r.next_attempt_at&&['pending','queued'].includes(r.status)?when(r.next_attempt_at):'—']]){const cell=element('div');cell.append(element('span',label),element('strong',value));grid.append(cell);}
+  for(const [label,value] of [['任务编号',r.id],['开始 / 完成',when(r.started_at)+' / '+when(r.finished_at)],['提交前读数',check||verification?'本次不提交':steps(r.before_step)],['核对时汇总',steps(r.summary_step)],['分钟明细合计',steps(r.detail_step)],['一致性已确认的读数',steps(r.observed_step)],['读数变化',diagnostic?'本次只查询':diff],['核对结果',verifyLabels[r.verification]||'尚未核对'],['最近核对时间',when(r.checked_at)],['执行尝试',String(r.attempt_count||0)+' 次'],['异常分类',errorLabels[r.error_code]||(r.error_code?'执行异常':'无')],['预计重试 / 核对',r.next_attempt_at&&['pending','queued'].includes(r.status)?when(r.next_attempt_at):'—']]){const cell=element('div');cell.append(element('span',label),element('strong',value));grid.append(cell);}
   if(r.parent_id){const cell=element('div');cell.append(element('span','对应执行记录'),element('strong',r.parent_id));grid.append(cell);}
   detail.append(grid,element('p','读回数值仅反映 Zepp 云端记录，不证明第三方 App 已同步，也不能排除其他设备同时写入。','hint'));
   if(!diagnostic&&['success','unknown'].includes(r.status)){const button=element('button','重新核对（不重新提交）','text-button');button.type='button';button.dataset.memberAction='true';button.disabled=busy||!state.account.membership.active;button.onclick=()=>action(async()=>{await api('/api/verify',{id:r.id});resetHistory();await runs();notice('已安排只读核对，稍后自动更新原记录的核对结果。');});detail.append(button);}

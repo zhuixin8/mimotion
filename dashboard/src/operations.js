@@ -7,7 +7,7 @@ import {membership} from './licensing.js';
 function str(v,max,required=false){if(typeof v!=='string'||v.length>max||(required&&!v.trim()))throw new UserError('输入内容为空或过长。');return v.trim();}
 function integer(v,max=100000000){const n=Number(v);if(v===null||v===''||!Number.isSafeInteger(n)||n<0||n>max)throw new UserError('参数无效。');return n;}
 const stamp="r.status||':'||r.verification||':'||r.updated_at||':'||COALESCE(r.checked_at,0)";
-const runIssue="(r.status IN ('failed','unknown') OR r.verification IN ('below_target','unavailable') OR (r.status IN ('pending','queued','running') AND r.updated_at < unixepoch()-900))";
+const runIssue="(r.status IN ('failed','unknown') OR r.verification IN ('below_target','unavailable','inconsistent','summary_only') OR (r.status IN ('pending','queued','running') AND r.updated_at < unixepoch()-900))";
 const kind="CASE WHEN r.status='unknown' THEN 'unknown' WHEN r.status IN ('pending','queued','running') THEN 'delayed' WHEN r.status='failed' THEN 'failed' ELSE 'unverified' END";
 const advice={credentials:'请联系用户重新登录 Zepp Life，再开启自动计划。',unknown:'提交结果不确定。请用户先在执行记录中重新核对或查看 Zepp，不要直接重复提交。',delayed:'检查队列与任务时间。正在执行的任务不要重复提交；等待状态更新后再判断。',failed:'先查看错误信息；凭据问题需重新登录，网络问题可先测试连接。',unverified:'提交或连接可能已成功，但云端读数尚未确认。请用户稍后进行只读核对。'};
 const issueQuery=`SELECT r.id,r.account_id,a.label,${kind} AS category,r.status,r.verification,r.message,r.error_code,r.day,r.step,r.observed_step,r.updated_at,${stamp} AS stamp,

@@ -1,3 +1,4 @@
+import {minuteFixture} from './minute-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -16,7 +17,7 @@ test('workerd + D1 + queue: actual delivery, durable delayed checks and duplicat
    if(url.pathname.includes('/app_tokens'))return Response.json({result:'ok',token_info:{app_token:'refreshed-test'}});
    if(url.pathname.includes('/band_data')){
     if(req.method==='POST'){posts++;return Response.json({message:'success'});}
-    return Response.json({message:'success',data:[{date:day,summary:{stp:{ttl:observed}}}]});
+    return Response.json({message:'success',data:[{date:day,data:minuteFixture(observed),summary:{stp:{ttl:observed}}}]});
    }
    throw new Error('Unexpected outbound request');
   }

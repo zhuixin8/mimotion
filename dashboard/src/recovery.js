@@ -28,7 +28,7 @@ export async function armVerification(env, id = null) {
 }
 
 export async function settleVerification(env) {
-  await query(env,`UPDATE runs SET verification=CASE WHEN observed_step IS NULL THEN 'unavailable' WHEN observed_step>=step THEN 'matched' ELSE 'below_target' END
+  await query(env,`UPDATE runs SET verification=CASE WHEN evidence_state='inconsistent' THEN 'inconsistent' WHEN evidence_state='summary_only' THEN 'summary_only' WHEN observed_step IS NULL THEN 'unavailable' WHEN observed_step>=step THEN 'matched' ELSE 'below_target' END
     WHERE verification='waiting' AND NOT EXISTS(SELECT 1 FROM runs child WHERE child.parent_id=runs.id AND child.auto_round>0 AND child.status IN ('pending','queued','running'))`).run();
 }
 

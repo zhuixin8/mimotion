@@ -9,12 +9,12 @@ export async function history(env, accountId, url) {
   const date = url.searchParams.get('day') || '';
   const filters = {
     all:'1=1', active:"status IN ('pending','queued','running') OR verification IN ('checking','waiting')",
-    attention:"status IN ('failed','unknown','skipped') OR verification IN ('below_target','unavailable')",
+    attention:"status IN ('failed','unknown','skipped') OR verification IN ('below_target','unavailable','inconsistent','summary_only')",
     matched:"verification='matched'", check:"kind IN ('check','verify')"
   };
   if (!Object.hasOwn(filters,filter) || !Number.isInteger(page) || page<0 || page>10000 || (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))))) throw new UserError('记录筛选条件无效。');
   const args = [accountId]; if(date)args.push(date);args.push(page*30);
-  const {results} = await query(env, `SELECT id,kind,day,step,status,message,created_at,started_at,finished_at,before_step,observed_step,verification,checked_at,parent_id,phase,attempt_count,error_code,next_attempt_at
+  const {results} = await query(env, `SELECT id,kind,day,step,status,message,created_at,started_at,finished_at,before_step,observed_step,summary_step,detail_step,evidence_state,verification,checked_at,parent_id,phase,attempt_count,error_code,next_attempt_at
     FROM runs WHERE account_id=? AND (${filters[filter]}) ${date?'AND day=?':''}
     ORDER BY created_at DESC,id DESC LIMIT 31 OFFSET ?`, ...args).all();
   const stats = await query(env, `SELECT COUNT(*) AS total,
@@ -26,6 +26,6 @@ export async function history(env, accountId, url) {
   const access=await membership(env,accountId);
   const account=await query(env,'SELECT id,enabled,needs_login,min_step,max_step FROM accounts WHERE id=?',accountId).first();
   const latest=await query(env,"SELECT id,kind,status,verification,step,created_at,finished_at,message FROM runs WHERE account_id=? AND kind IN ('manual','schedule') ORDER BY created_at DESC,id DESC LIMIT 1",accountId).first();
-  const reading=await query(env,'SELECT day,observed_step,checked_at FROM runs WHERE account_id=? AND observed_step IS NOT NULL AND checked_at IS NOT NULL ORDER BY checked_at DESC,id DESC LIMIT 1',accountId).first();
+  const reading=await query(env,'SELECT day,observed_step,summary_step,detail_step,evidence_state,checked_at FROM runs WHERE account_id=? AND checked_at IS NOT NULL ORDER BY checked_at DESC,id DESC LIMIT 1',accountId).first();
   return {runs:results.slice(0,30),page,has_more:results.length>30,stats,check,membership:access,runtime:{now:Math.floor(Date.now()/1000),latest,reading,plan:account?{enabled:!!account.enabled,needs_login:!!account.needs_login,min_step:account.min_step,max_step:account.max_step}:null,next:nextExecution(account,access)}};
 }
