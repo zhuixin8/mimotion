@@ -11,6 +11,7 @@ import {random, equal, seal, open, UserError, readText, utf8, b64} from './secur
 import {loginZepp, validate} from './zepp.js';
 import {query, limit, seconds, enqueue, scheduled, consume} from './jobs.js';
 import {history} from './history.js';
+import {labAction,labHistory} from './sync-lab.js';
 import {publicSite} from './site.js';
 import {connectionCheck} from './connection-check.js';
 export {connectionCheck};
@@ -98,8 +99,10 @@ async function route(request, env) {
     return json(await history(env,s.id,url));
   }
   if(path==='/api/license'&&request.method==='GET')return json(await licenseHistory(env,s.id));
+  if(path==='/api/sync-lab'&&request.method==='GET')return json(await labHistory(env,s.id));
   if (request.method === 'POST') {
     await limit(env, 'write:' + s.id, 20, 60);
+    if(path.startsWith('/api/sync-lab/'))return json(await labAction(env,s,path.slice('/api/sync-lab/'.length),data));
     if(path==='/api/redeem'){
       await limit(env,'redeem:'+s.id,5,600);
       if((await membership(env,s.id)).suspended)throw new UserError('账号已停用，请联系管理员。',403);

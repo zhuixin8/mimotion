@@ -1,5 +1,9 @@
 # MiMotion 多用户网页版
 
+## 设备与同步诊断（实验）
+
+控制台新增独立的设备读取、虚拟设备绑定、每日一次 +240 步分钟明细对照与诊断记录。虚拟设备不等于蓝牙启用，Zepp 读回不等于微信同步成功；不自动接入日常计划。详见 [协议、测试结论与部署说明](docs/sync-diagnostics.md)。部署前应用 `0009_sync_lab.sql`；该迁移不改变现有账号或计划。
+
 线上用户入口：https://s.dqai.cc/ ，管理后台：https://s.dqai.cc/zhuixins_x 。
 
 通过 Wrangler Custom Domain 绑定 `s.dqai.cc`，Cloudflare 自动管理 DNS 和 HTTPS 证书。旧 workers.dev 地址的首页与后台入口跳转至新域名；更换域名后需重新登录。`APP_ORIGIN` 是唯一允许的应用及 POST 来源，`LEGACY_ORIGIN` 仅用于页面跳转。

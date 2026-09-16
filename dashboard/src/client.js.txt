@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
-let state=null,busy=false,polling=false,page=0,hasMore=false,nextPoll=0,currentView='overview';
-const views={overview:['运行概览','查看账号状态，快速测试与执行。'],plan:['步数计划','设置每日目标，管理自动执行。'],history:['执行记录','查看任务进度与云端核对结果。'],membership:['激活与续期','管理使用期，兑换激活码。']};
+let state=null,busy=false,polling=false,page=0,hasMore=false,nextPoll=0,currentView='overview',labClaims=null;
+const views={'sync-lab':['设备与同步诊断','分别核对设备、Zepp 明细与第三方同步。'],overview:['运行概览','查看账号状态，快速测试与执行。'],plan:['步数计划','设置每日目标，管理自动执行。'],history:['执行记录','查看任务进度与云端核对结果。'],membership:['激活与续期','管理使用期，兑换激活码。']};
 function showView(view,focus=false){
  currentView=views[view]?view:'overview';
  document.querySelectorAll('[data-page]').forEach(p=>p.hidden=p.dataset.page!==currentView||!state?.signed_in);
@@ -8,6 +8,7 @@ function showView(view,focus=false){
  $('view-title').textContent=views[currentView][0];$('view-description').textContent=views[currentView][1];
  if(focus)$('view-title').focus({preventScroll:true});
  if(currentView==='plan')renderSchedule();
+ if(currentView==='sync-lab')loadLabHistory().catch(e=>notice(e.message,true));
 }
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>showView(b.dataset.view,true));
 const when=t=>t?new Date(t*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';
@@ -17,6 +18,7 @@ function syncAccess(access=state?.account?.membership){
  const active=!!access?.active;
  for(const id of ['run-now','test-connection'])$(id).disabled=busy||!active;
  document.querySelectorAll('[data-member-action]').forEach(b=>b.disabled=busy||!active);
+ for(const kind of ['bind','append'])$('lab-'+kind).disabled=busy||!active||!labClaims||!!labClaims[kind+'_claimed']||!$('lab-'+kind+'-consent').checked;
  if(!access)return;
  $('redeem-button').disabled=busy||access.suspended;
  $('account-state').textContent=!active?'当前使用期无效，任务执行已暂停；设置和历史记录仍保留。':state.account.needs_login?'Zepp 凭据失效，请退出后重新登录。':state.account.enabled?'自动执行已开启，使用期内关闭网页也会继续。':'自动执行已暂停，可手动执行一次。';
@@ -156,3 +158,42 @@ $('delete-account').onclick=()=>action(async()=>{if(!$('confirm-delete').checked
 loadSite().catch(()=>{});
 load().catch(e=>{$('loading-panel').hidden=true;if(!state)$('login-panel').hidden=false;notice(e.message,true);});
 setInterval(async()=>{if(state?.signed_in&&currentView==='plan'&&!document.hidden)renderSchedule();if(!state?.signed_in||busy||polling||document.hidden||page!==0||Date.now()<nextPoll)return;polling=true;try{await runs();}catch(e){$('history-update').textContent='刷新失败：'+e.message;nextPoll=Date.now()+30000;}finally{polling=false;}},1000);
+
+const labNames={inspect:'只读核对',bind:'虚拟设备绑定',append:'分钟明细追加'};
+const labStates={checking:'检查中 / 结果未返回',submitted:'已记录提交意图，待核对',verified:'已读回验证',read:'只读完成',blocked:'已阻止',unconfirmed:'结果未确认'};
+function labEvidence(e){
+ const box=element('div',undefined,'record-details');
+ const labels={summary:'Zepp 汇总',detail:'分钟明细合计',before_summary:'提交前汇总',before_detail:'提交前明细',expected_summary:'预期汇总',expected_detail:'预期明细'};
+ for(const [k,label] of Object.entries(labels))if(Object.hasOwn(e,k)){const cell=element('div');cell.append(element('span',label),element('strong',steps(e[k])));box.append(cell);}
+ if(e.minutes){const cell=element('div');cell.append(element('span','追加的分钟（北京时间）'),element('strong',e.minutes.map(m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0')).join('、')));box.append(cell);}
+ return box;
+}
+function renderLabSnapshot(r){
+ const box=$('lab-snapshot');box.replaceChildren();const e=r.evidence;
+ box.append(element('p',when(r.finished_at||r.created_at)+' · '+labNames[r.kind]+' · 数据日期 '+r.day,'hint'));
+ if(e?.devices){box.append(element('strong','设备 '+e.devices.length+' 个'));for(const d of e.devices)box.append(element('p','设备尾号 '+d.id_suffix+' · '+(d.active===null?'启用状态未知':d.active?'已启用':'未启用')+' · 产品编号 '+(d.product_id??'未知'),'hint'));}
+ if(e)box.append(labEvidence(e));
+ box.append(element('p',r.message,'hint'));
+ if(e?.state)box.append(element('p',({consistent:'汇总与明细一致，仍需在微信核对。',inconsistent:'汇总与明细不一致：不能认定目标已生效。',summary_only:'仅读到汇总，不能确认当天明细。',ambiguous:'当天记录有多条，不能确定同一数据源。',unavailable:'暂时无法确认当天数据。'})[e.state]||'待核对','hint'));
+}
+async function loadLabHistory(){
+ if(!state?.signed_in)return;
+ const session=state.csrf,value=await api('/api/sync-lab');if(!state?.signed_in||state.csrf!==session)return;
+ labClaims=value;syncAccess();const box=$('lab-history');box.replaceChildren();
+ $('lab-snapshot').textContent='尚未读取。打开本页不会自动请求 Zepp。';
+ $('lab-bind-status').textContent=value.bind_claimed?'已存在绑定提交记录，请只读核对；不会重复绑定。':'每个账号最多发起一次绑定。';
+ $('lab-append-status').textContent=value.append_claimed?'今天已存在追加提交记录，请只读核对。':'次数按北京时间日期计算。';
+ if(!value.records.length){box.append(element('p','暂无诊断记录。','hint'));return;}
+ const latest=value.records.find(r=>r.evidence);if(latest)renderLabSnapshot(latest);
+ for(const r of value.records){const row=element('details',undefined,'lab-record');row.append(element('summary',when(r.created_at)+' · '+labNames[r.kind]+' · '+(labStates[r.status]||'待核对')),element('p',r.message,'hint'));if(r.evidence)row.append(labEvidence(r.evidence));row.append(element('p','任务编号：'+r.id,'hint'));box.append(row);}
+}
+async function runLab(kind){
+ const consent=kind==='inspect'||$('lab-'+kind+'-consent').checked;
+ if(!consent)throw new Error('请先勾选本项操作的确认说明。');
+ notice(kind==='inspect'?'正在只读核对设备与明细…':'正在执行一次实验操作，请勿重复提交…',false,{duration:0});
+ try{const result=await api('/api/sync-lab/'+kind,{confirm:consent});notice(result.message,result.status==='unconfirmed');}
+ finally{if(kind!=='inspect')$('lab-'+kind+'-consent').checked=false;await loadLabHistory();}
+}
+for(const kind of ['inspect','bind','append'])$('lab-'+kind).onclick=()=>action(()=>runLab(kind));
+for(const kind of ['bind','append'])$('lab-'+kind+'-consent').onchange=()=>syncAccess();
+$('lab-refresh').onclick=()=>action(loadLabHistory);

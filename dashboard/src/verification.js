@@ -44,7 +44,7 @@ export function parseDayEvidence(data,day) {
   const state=summary===null?'unavailable':detail===null?'summary_only':summary===detail?'consistent':'inconsistent';
   return {summary,detail,observed:state==='consistent'?summary:null,state};
 }
-async function readDayData(tokens, day) {
+export async function readDayData(tokens, day) {
   const params = new URLSearchParams({userid:String(tokens.user_id),from_date:day,to_date:day,query_type:'detail',device_type:'0',byteLength:'8'});
   const {response,data} = await fetchJSON('https://api-mifit-cn.huami.com/v1/data/band_data.json?' + params, {headers:{apptoken:tokens.app_token,'user-agent':'MiFit6.14.0 (M2007J1SC; Android 12; Density/2.75)'}}, 'Zepp 步数查询接口');
   if (!response.ok || data.message !== 'success') throw new UserError('暂时无法读取 Zepp 云端步数，请稍后重新核对。', 502);
