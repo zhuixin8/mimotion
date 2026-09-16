@@ -19,9 +19,10 @@ function syncAccess(access=state?.account?.membership){
  for(const id of ['run-now','test-connection'])$(id).disabled=busy||!active;
  document.querySelectorAll('[data-member-action]').forEach(b=>b.disabled=busy||!active);
  for(const kind of ['bind','append'])$('lab-'+kind).disabled=busy||!active||!labClaims||!!labClaims[kind+'_claimed']||!$('lab-'+kind+'-consent').checked;
+ $('reconnect-panel').hidden=!state?.signed_in||!state.account.needs_login;
  if(!access)return;
  $('redeem-button').disabled=busy||access.suspended;
- $('account-state').textContent=!active?'当前使用期无效，任务执行已暂停；设置和历史记录仍保留。':state.account.needs_login?'Zepp 凭据失效，请退出后重新登录。':state.account.enabled?'自动执行已开启，使用期内关闭网页也会继续。':'自动执行已暂停，可手动执行一次。';
+ $('account-state').textContent=!active?'当前使用期无效，任务执行已暂停；设置和历史记录仍保留。':state.account.needs_login?'Zepp 凭据失效，请使用上方的恢复连接表单。':state.account.enabled?'自动执行已开启，使用期内关闭网页也会继续。':'自动执行已暂停，可手动执行一次。';
  $('membership-state').className='notice '+(access.active?'success':'error');
  $('membership-state').textContent=access.suspended?'账号已被管理员停用，请联系管理员。':active?'使用期有效 · 到期时间：'+when(access.expires_at)+'（北京时间）':access.expires_at?'使用期已于 '+when(access.expires_at)+' 到期，请兑换激活码续期。':'尚未激活，请兑换激活码开通。';
  $('member-reference').textContent=state.account.id;
@@ -99,8 +100,8 @@ function updateStepRecommendation(){
 for(const id of ['min-step','max-step'])$(id).addEventListener('input',updateStepRecommendation);
 async function load(){
  state=await api('/api/status');$('loading-panel').hidden=true;$('login-panel').hidden=state.signed_in;$('account-panel').hidden=!state.signed_in;$('header-user').hidden=!state.signed_in;document.body.classList.toggle('signed-in',state.signed_in);showView(currentView);
- if(state.signed_in){const a=state.account;$('account-label').textContent=a.label;$('min-step').value=a.min_step;$('max-step').value=a.max_step;updateStepRecommendation();$('enabled').checked=a.enabled;$('account-state').textContent=a.needs_login?'登录凭据已失效，请退出后重新登录，再开启计划。':a.enabled?'自动执行已开启，关闭网页也会继续。':'自动执行已暂停，可手动执行一次。';await runs();await licenses();}
- else{$('runs-list').replaceChildren();$('connection-result').textContent='尚未测试';}
+ if(state.signed_in){const a=state.account;$('account-label').textContent=a.label;$('min-step').value=a.min_step;$('max-step').value=a.max_step;updateStepRecommendation();$('enabled').checked=a.enabled;$('account-state').textContent=a.needs_login?'登录凭据已失效，可在当前页面恢复连接。':a.enabled?'自动执行已开启，关闭网页也会继续。':'自动执行已暂停，可手动执行一次。';await runs();await licenses();}
+ else{$('reconnect-panel').hidden=true;$('reconnect-password').value='';$('reconnect-account').value='';$('reconnect-consent').checked=false;labClaims=null;$('runs-list').replaceChildren();$('connection-result').textContent='尚未测试';}
 }
 function element(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
 async function runs(){
@@ -192,8 +193,31 @@ async function runLab(kind){
  if(!consent)throw new Error('请先勾选本项操作的确认说明。');
  notice(kind==='inspect'?'正在只读核对设备与明细…':'正在执行一次实验操作，请勿重复提交…',false,{duration:0});
  try{const result=await api('/api/sync-lab/'+kind,{confirm:consent});notice(result.message,result.status==='unconfirmed');}
- finally{if(kind!=='inspect')$('lab-'+kind+'-consent').checked=false;await loadLabHistory();}
+ finally{if(kind!=='inspect')$('lab-'+kind+'-consent').checked=false;await refreshAuthStatus();await loadLabHistory();}
 }
 for(const kind of ['inspect','bind','append'])$('lab-'+kind).onclick=()=>action(()=>runLab(kind));
 for(const kind of ['bind','append'])$('lab-'+kind+'-consent').onchange=()=>syncAccess();
 $('lab-refresh').onclick=()=>action(loadLabHistory);
+
+async function refreshAuthStatus(){
+ const updated=await api('/api/status');
+ if(!updated.signed_in)throw new Error('网页会话已过期，请刷新页面登录。');
+ state=updated;syncAccess();
+}
+async function finishReconnect(){
+ await refreshAuthStatus();labClaims=null;
+ $('reconnect-consent').checked=false;$('reconnect-password').value='';
+ await runs();if(currentView==='sync-lab')await loadLabHistory();
+ notice('Zepp 连接已恢复，仍在当前页面。计划开关保持原状；刚才的操作未自动重新执行。');
+}
+$('renew-token').onclick=()=>action(async()=>{
+ notice('正在尝试续用现有凭据，不会使用密码重新登录…',false,{duration:0});
+ try{await api('/api/renew',{});await finishReconnect();}
+ catch(e){await refreshAuthStatus();$('reconnect-details').open=true;throw e;}
+});
+$('reconnect-form').onsubmit=e=>{e.preventDefault();action(async()=>{
+ const data={account:$('reconnect-account').value,password:$('reconnect-password').value,consent:$('reconnect-consent').checked};
+ $('reconnect-password').value='';
+ notice('正在重新验证当前账号，请稍候…',false,{duration:0});
+ await api('/api/reconnect',data);await finishReconnect();
+});};

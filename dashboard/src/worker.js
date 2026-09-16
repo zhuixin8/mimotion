@@ -12,6 +12,7 @@ import {loginZepp, validate} from './zepp.js';
 import {query, limit, seconds, enqueue, scheduled, consume} from './jobs.js';
 import {history} from './history.js';
 import {labAction,labHistory} from './sync-lab.js';
+import {reconnect} from './reconnect.js';
 import {publicSite} from './site.js';
 import {connectionCheck} from './connection-check.js';
 export {connectionCheck};
@@ -102,6 +103,10 @@ async function route(request, env) {
   if(path==='/api/sync-lab'&&request.method==='GET')return json(await labHistory(env,s.id));
   if (request.method === 'POST') {
     await limit(env, 'write:' + s.id, 20, 60);
+    if(path==='/api/reconnect'||path==='/api/renew'){
+      const renewed=await reconnect(env,s,data,identity,path==='/api/reconnect');
+      const res=json({ok:true});setCookie(res,await seal(renewed,env.MASTER_SECRET,'user-session-v2'));return res;
+    }
     if(path.startsWith('/api/sync-lab/'))return json(await labAction(env,s,path.slice('/api/sync-lab/'.length),data));
     if(path==='/api/redeem'){
       await limit(env,'redeem:'+s.id,5,600);

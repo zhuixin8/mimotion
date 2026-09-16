@@ -4,12 +4,13 @@ import {isAppTokenValid} from './verification.js';
 export async function refreshToken(tokens) {
   // A read-only check avoids renewing credentials that still work.
   if(tokens.app_token && await isAppTokenValid(tokens))return;
+  if(!tokens.login_token)throw new UserError('Zepp 授权无法续用，请在当前页面重新验证账号；密码不会保存。',401);
   const params = new URLSearchParams({app_name:'com.xiaomi.hm.health', dn:'api-user.huami.com,api-mifit.huami.com,app-analytics.huami.com', login_token:tokens.login_token});
   const {response, data} = await fetchJSON('https://account-cn.huami.com/v1/client/app_tokens?' + params, {headers:{'user-agent':'MiFit/5.3.0 (iPhone; iOS 14.7.1; Scale/3.00)'}}, 'Zepp 凭据刷新接口');
   if (response.status === 429 || response.status >= 500) throw new UserError('Zepp 服务暂时不可用，请稍后重试。', 503);
   // A new client login can invalidate the phone session. Background tasks must
   // never recover through /v2/client/login, even when access_token still works.
-  if(response.ok && String(data.error_code)==='0105')throw new UserError('Zepp 授权无法续用，已暂停任务。后台不会自动重新登录，以免影响手机 App；如需恢复，请了解登录影响后手动登录本站。',401);
+  if(response.ok && String(data.error_code)==='0105')throw new UserError('Zepp 授权无法续用，已暂停任务。请在当前页面重新验证账号；密码不会保存，重新验证可能使手机 App 退出登录。',401);
   if (response.status===401 || response.status===403 || data.result==='fail') throw new UserError('Zepp 登录凭据已失效，请重新登录。', 401);
   if (!response.ok || data.result !== 'ok' || !data.token_info?.app_token) throw new UpstreamError('Zepp 凭据接口响应格式发生变化，暂时无法验证。','response_format');
   tokens.app_token = data.token_info.app_token;

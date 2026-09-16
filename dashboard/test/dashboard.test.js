@@ -3,13 +3,61 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
-import worker from '../dist/worker.js';
+import worker,{identity} from '../dist/worker.js';
 import {seal,open,fetchJSON} from '../src/security.js';
 import {loginZepp,validate} from '../src/zepp.js';
 import {connectionCheck} from '../dist/worker.js';
 const origin='https://mimotion.test';
 const time=()=>Math.floor(Date.now()/1000);
 const day=()=>new Date(Date.now()+28800000).toISOString().slice(0,10);
+
+test('inline reconnect preserves account settings and membership, rotates session, stores no password and enqueues nothing',async(t)=>{
+ for(const enabled of [0,1]){
+  const env=environment(),id=await identity(env,'zepp-user:verified-user'),a=await account(env,id,enabled),mock=zeppMock(t);
+  env.db.prepare('UPDATE accounts SET needs_login=1,min_step=1234,max_step=2345').run();
+  const member=env.db.prepare('SELECT * FROM memberships').get();
+  const result=await api(env,'/api/reconnect',{account:'test@example.com',password:'reconnect-only-secret',consent:true},a);
+  assert.equal(result.status,200);const cookie=result.headers.get('set-cookie').split(';')[0];
+  assert.equal((await (await api(env,'/api/status',undefined,a)).json()).signed_in,false);
+  const status=await (await api(env,'/api/status',undefined,{cookie})).json();assert.equal(status.signed_in,true);assert.notEqual(status.csrf,a.csrf);
+  const current=env.db.prepare('SELECT * FROM accounts').get();assert.equal(current.enabled,enabled);assert.equal(current.min_step,1234);assert.equal(current.max_step,2345);assert.equal(current.needs_login,0);assert.equal(current.lease_until,0);
+  assert.deepEqual(env.db.prepare('SELECT * FROM memberships').get(),member);
+  const tokens=await open(current.credentials,env.MASTER_SECRET,'zepp:'+id);assert.equal(tokens.user_id,'verified-user');assert.ok(!JSON.stringify(tokens).includes('reconnect-only-secret'));assert.ok(!('password' in tokens));
+  assert.equal(env.sent.length,0);assert.equal(env.db.prepare('SELECT COUNT(*) n FROM runs').get().n,0);assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')).length,0);
+ }
+});
+test('inline reconnect rejects CSRF, missing consent, another identity and active account tasks',async(t)=>{
+ const env=environment(),a=await account(env,'A',0),mock=zeppMock(t),input={account:'test@example.com',password:'dummy',consent:true};
+ const original=env.db.prepare('SELECT credentials FROM accounts').get().credentials;
+ assert.equal((await api(env,'/api/reconnect',input,{...a,csrf:'wrong'})).status,403);
+ assert.equal((await api(env,'/api/reconnect',{...input,consent:false},a)).status,400);assert.equal(mock.calls.length,0);
+ addRun(env,'pending','A');assert.equal((await api(env,'/api/reconnect',input,a)).status,409);assert.equal(mock.calls.length,0);
+ env.db.prepare("UPDATE runs SET status='failed'").run();assert.equal((await api(env,'/api/reconnect',input,a)).status,409);
+ assert.equal(env.db.prepare('SELECT credentials FROM accounts').get().credentials,original);assert.equal((await (await api(env,'/api/status',undefined,a)).json()).signed_in,true);
+});
+test('renewal recovers stale app token without password login and keeps paused plan paused',async(t)=>{
+ const env=environment(),a=await account(env,'A',0),mock=zeppMock(t);env.db.prepare('UPDATE accounts SET needs_login=1').run();
+ assert.equal((await api(env,'/api/renew',{},a)).status,200);
+ const current=env.db.prepare('SELECT * FROM accounts').get(),tokens=await open(current.credentials,env.MASTER_SECRET,'zepp:A');
+ assert.equal(tokens.app_token,'refreshed-login-A');assert.equal(current.needs_login,0);assert.equal(current.enabled,0);
+ assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,0);assert.equal(env.sent.length,0);
+});
+test('failed renewal leaves session usable for password recovery, is rate limited, and never attempts client login',async(t)=>{
+ const env=environment(),a=await account(env,'A',0),mock=zeppMock(t,{expired:true});
+ for(let i=0;i<3;i++)assert.equal((await api(env,'/api/renew',{},a)).status,401);
+ assert.equal((await api(env,'/api/renew',{},a)).status,429);
+ assert.equal((await (await api(env,'/api/status',undefined,a)).json()).signed_in,true);
+ const current=env.db.prepare('SELECT * FROM accounts').get();assert.equal(current.needs_login,1);assert.equal(current.lease_until,0);assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,0);
+});
+test('logout during reconnect fences credential replacement and prevents a new session',async(t)=>{
+ const env=environment(),id=await identity(env,'zepp-user:verified-user'),a=await account(env,id,0);zeppMock(t);const normal=globalThis.fetch;
+ let started,release;const ready=new Promise(r=>started=r),gate=new Promise(r=>release=r);
+ t.mock.method(globalThis,'fetch',async(url,opts)=>{if(String(url).includes('/v2/client/login')){started();await gate;}return normal(url,opts);});
+ const old=env.db.prepare('SELECT credentials FROM accounts').get().credentials;
+ const pending=api(env,'/api/reconnect',{account:'test@example.com',password:'dummy',consent:true},a);await ready;
+ await api(env,'/api/logout',{},a);release();const res=await pending;assert.equal(res.status,409);assert.equal(res.headers.has('set-cookie'),false);
+ assert.equal(env.db.prepare('SELECT credentials FROM accounts').get().credentials,old);assert.equal(env.db.prepare('SELECT lease_until FROM accounts').get().lease_until,0);
+});
 
 test('valid cached credentials run without refresh or a new client login',async(t)=>{
  const env=environment();await account(env,'A');addRun(env,'cached','A');const mock=zeppMock(t,{validApp:true});

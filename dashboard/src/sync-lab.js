@@ -1,7 +1,8 @@
 import {query,seconds,limit} from './jobs.js';
 import {open,seal,fetchJSON,UserError} from './security.js';
 import {requireMembership} from './licensing.js';
-import {isAppTokenValid,readDayData,parseDayEvidence} from './verification.js';
+import {readDayData,parseDayEvidence} from './verification.js';
+import {refreshToken} from './steps.js';
 import {planMinuteAppend} from './minute-plan.js';
 
 const today=()=>new Date(Date.now()+28800000).toISOString().slice(0,10);
@@ -29,7 +30,6 @@ export async function labAction(env,s,kind,data){
   const mutation=kind!=='inspect';
   if(mutation&&data.confirm!==true)throw new UserError('请先确认实验操作的影响。');
   await requireMembership(env,s.id);
-  if(s.account.needs_login)throw new UserError('本站 Zepp 凭据已失效；不会自动重新登录。',401);
   await limit(env,'sync-lab:'+s.id,3,60);
   const id=crypto.randomUUID(),day=today(),now=seconds();
   const lock=await query(env,`UPDATE accounts SET lease_id=?,lease_until=? WHERE id=? AND session_version=? AND lease_until<? AND NOT EXISTS(SELECT 1 FROM runs WHERE account_id=? AND status IN ('pending','queued','running'))`,id,now+300,s.id,s.version,now,s.id).run();
@@ -53,7 +53,12 @@ export async function labAction(env,s,kind,data){
     await query(env,"INSERT INTO sync_lab_operations(id,account_id,kind,day,status,created_at) VALUES(?,?,?,?,'checking',?)",id,s.id,kind,day,now).run();recorded=true;
     const a=await query(env,'SELECT credentials FROM accounts WHERE id=? AND lease_id=?',s.id,id).first();
     const tokens=await open(a.credentials,env.MASTER_SECRET,'zepp:'+s.id);
-    if(!await isAppTokenValid(tokens))throw new UserError('Zepp 凭据已失效；本次没有尝试重新登录。',401);
+    try{await refreshToken(tokens);}catch(e){
+      if(e instanceof UserError&&e.status===401)await query(env,'UPDATE accounts SET needs_login=1,enabled=0 WHERE id=? AND lease_id=? AND session_version=?',s.id,id,s.version).run();
+      throw e;
+    }
+    await fence();
+    await query(env,'UPDATE accounts SET credentials=?,needs_login=0 WHERE id=? AND lease_id=? AND session_version=?',await seal(tokens,env.MASTER_SECRET,'zepp:'+s.id),s.id,id,s.version).run();
     const devices=await labDevices(tokens);
     if(kind==='bind'){
       // Refuse ANY existing device, including inactive or unrecognized hardware.

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
-import {seal} from '../src/security.js';
+import {seal,open} from '../src/security.js';
 import {planMinuteAppend} from '../src/minute-plan.js';
 import {minuteFixture} from './minute-fixture.js';
 
@@ -39,6 +39,7 @@ test('workerd lab: auth, CSRF, isolation, lease, read-only, exact append, durabl
   outboundService:async req=>{
    const url=new URL(req.url);reads++;
    if(url.pathname.includes('getUserInfo.json'))return tokenValid?Response.json({message:'success'}):new Response('{}',{status:401});
+   if(url.pathname.includes('/app_tokens'))return Response.json({result:'ok',token_info:{app_token:'renewed-without-password'}});
    if(url.pathname.endsWith('/lists.json'))return Response.json({code:1,data:foreign?[{...devices[0],uid:'someone-else'}]:devices});
    if(url.pathname.endsWith('/binds.json')){
     binds++;const body=new URLSearchParams(await req.text());assert.equal(body.get('activeStatus'),'0');
@@ -88,7 +89,12 @@ test('workerd lab: auth, CSRF, isolation, lease, read-only, exact append, durabl
   const history=await (await call()).json();assert.ok(history.append_claimed);assert.ok(history.records.length);const beforeReads=reads;await call();assert.equal(reads,beforeReads);
   const cookieB=await seal({id:'B',version:'v',csrf:'csrf',exp:now+86400},'lab-test-only','user-session-v2');
   assert.equal((await (await call('',{}, {cookie:'__Host-mimotion-user-v2='+cookieB})).json()).records.length,0);
-  await resetLimit();tokenValid=false;assert.equal((await call('inspect')).status,401);tokenValid=true;
+  await resetLimit();tokenValid=false;assert.equal((await call('inspect')).status,401);
+  await db.prepare("UPDATE accounts SET credentials=?,needs_login=1,enabled=0 WHERE id='A'").bind(await seal({user_id:'A',app_token:'old',login_token:'grant'},'lab-test-only','zepp:A')).run();
+  assert.equal((await call('inspect')).status,200);
+  const renewed=await db.prepare("SELECT credentials,needs_login,enabled FROM accounts WHERE id='A'").first();
+  assert.equal(renewed.needs_login,0);assert.equal(renewed.enabled,0);assert.equal((await open(renewed.credentials,'lab-test-only','zepp:A')).app_token,'renewed-without-password');
+  tokenValid=true;await resetLimit();
   // Test a fresh day claim without advancing the clock; the deletion is TEST-ONLY.
   await db.prepare("DELETE FROM sync_lab_claims WHERE slot LIKE 'append:%'").run();uncertain=true;
   assert.equal((await call('append',{confirm:true})).status,502);assert.equal(posts,2);
