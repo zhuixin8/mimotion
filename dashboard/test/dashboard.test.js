@@ -10,49 +10,26 @@ const origin='https://mimotion.test';
 const time=()=>Math.floor(Date.now()/1000);
 const day=()=>new Date(Date.now()+28800000).toISOString().slice(0,10);
 
-test('0105 recovery verifies identity, persists credentials and submits only once',async(t)=>{
- for(const type of [undefined,'huami_phone']){
-  const env=environment();await account(env,'A');addRun(env,'recover','A');
-  const old=await open(env.db.prepare('SELECT credentials FROM accounts').get().credentials,env.MASTER_SECRET,'zepp:A');
-  Object.assign(old,{access_token:'dummy-access',device_id:'dummy-device',login_type:type});
-  env.db.prepare('UPDATE accounts SET credentials=?').run(await seal(old,env.MASTER_SECRET,'zepp:A'));
-  const mock=zeppMock(t,{userId:'A'}),normal=globalThis.fetch;let grants=0;
-  t.mock.method(globalThis,'fetch',async(url,opts)=>{
-   if(String(url).includes('/app_tokens'))return Response.json({error_code:'0105'});
-   if(String(url).includes('/v2/client/login')){grants++;assert.equal(opts.body.get('third_name'),type||'email');assert.equal(opts.body.get('allow_registration'),'false');}
-   return normal(url,opts);
-  });
-  await consume(env,msg('recover'));
-  assert.equal(grants,1);assert.equal(env.db.prepare('SELECT status FROM runs').get().status,'success');
-  assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,1);
-  const row=env.db.prepare('SELECT * FROM accounts').get(),fresh=await open(row.credentials,env.MASTER_SECRET,'zepp:A');
-  assert.equal(fresh.app_token,'app-token');assert.equal(fresh.login_token,'login-token');assert.equal(fresh.login_type,type||'email');assert.equal(row.needs_login,0);assert.equal(row.enabled,1);
- }
+test('valid cached credentials run without refresh or a new client login',async(t)=>{
+ const env=environment();await account(env,'A');addRun(env,'cached','A');const mock=zeppMock(t,{validApp:true});
+ await consume(env,msg('cached'));
+ assert.equal(env.db.prepare('SELECT status FROM runs').get().status,'success');
+ assert.equal(mock.calls.filter(c=>c.url.includes('/app_tokens')||c.url.includes('/v2/client/login')||c.url.includes('/registrations/tokens')).length,0);
+ assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,1);
+ const tokens=await open(env.db.prepare('SELECT credentials FROM accounts').get().credentials,env.MASTER_SECRET,'zepp:A');assert.equal(tokens.app_token,'app-A');
 });
 
-test('failed recovery never submits or stores partial or mismatched credentials',async(t)=>{
- for(const scenario of ['mismatch','incomplete','rejected','outage','missing-access']){
-  const env=environment();await account(env,'A');addRun(env,'recover','A');
-  const old=await open(env.db.prepare('SELECT credentials FROM accounts').get().credentials,env.MASTER_SECRET,'zepp:A');
-  if(scenario!=='missing-access')Object.assign(old,{access_token:'dummy-access',device_id:'dummy-device'});
-  const sealed=await seal(old,env.MASTER_SECRET,'zepp:A');env.db.prepare('UPDATE accounts SET credentials=?').run(sealed);
-  const mock=zeppMock(t),normal=globalThis.fetch;let grants=0;
-  t.mock.method(globalThis,'fetch',async(url,opts)=>{
-   if(String(url).includes('/app_tokens'))return Response.json({error_code:'0105'});
-   if(String(url).includes('/v2/client/login')){
-    grants++;
-    if(scenario==='outage')return Response.json({message:'unavailable'},{status:503});
-    if(scenario==='rejected')return Response.json({result:'fail'},{status:401});
-    return Response.json({result:'ok',token_info:{user_id:'B',app_token:'partial',...(scenario==='mismatch'?{login_token:'wrong-user'}:{})}});
-   }
-   return normal(url,opts);
-  });
-  await consume(env,msg('recover'));
-  assert.equal(grants,scenario==='missing-access'?0:1);assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,0);
-  const row=env.db.prepare('SELECT * FROM accounts').get();assert.equal(row.credentials,sealed);
-  assert.equal(row.needs_login,['mismatch','rejected','missing-access'].includes(scenario)?1:0,scenario);
- }
+test('0105 pauses tasks without a client login even when an access grant is stored',async(t)=>{
+ const env=environment();await account(env,'A');addRun(env,'expired','A');
+ const old=await open(env.db.prepare('SELECT credentials FROM accounts').get().credentials,env.MASTER_SECRET,'zepp:A');Object.assign(old,{access_token:'dummy-access',device_id:'dummy-device'});
+ const sealed=await seal(old,env.MASTER_SECRET,'zepp:A');env.db.prepare('UPDATE accounts SET credentials=?').run(sealed);
+ const mock=zeppMock(t),normal=globalThis.fetch;
+ t.mock.method(globalThis,'fetch',async(url,opts)=>String(url).includes('/app_tokens')?Response.json({error_code:'0105'}):normal(url,opts));
+ await consume(env,msg('expired'));
+ const row=env.db.prepare('SELECT * FROM accounts').get();assert.equal(row.credentials,sealed);assert.equal(row.needs_login,1);assert.equal(row.enabled,0);
+ assert.equal(env.db.prepare('SELECT status FROM runs').get().status,'failed');assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,0);
 });
+
 test('login during a running read-only check reuses it and old work cannot overwrite renewed credentials',async(t)=>{
  for(const fail of [false,true]){
   const env=environment();const mock=zeppMock(t);env.db.prepare('UPDATE site_settings SET new_user_gift_days=7').run();
@@ -266,7 +243,7 @@ function zeppMock(t,options={}){const calls=[];const cloud=new Map();let active=
  if(url.includes('/v2/client/login')){assert.equal(new Headers(opts.headers).has('x-hm-ekv'),false);return Response.json({result:'ok',token_info:{login_token:'login-token',app_token:'app-token',user_id:options.userId||'verified-user'}});}
  if(url.includes('/device/binds.json'))return Response.json({items:[]});
  if(url.includes('/client/app_tokens')){if(options.expired)return Response.json({result:'fail'},{status:401});return Response.json({result:'ok',token_info:{app_token:'refreshed-'+new URL(url).searchParams.get('login_token')}});}
- if(url.includes('getUserInfo.json'))return Response.json({message:'success'});
+ if(url.includes('getUserInfo.json'))return options.validApp||String(new Headers(opts.headers).get('apptoken')).startsWith('refreshed-')?Response.json({message:'success'}):Response.json({message:'unauthorized'},{status:401});
  if(url.includes('/band_data.json')&&opts.method!=='POST'){
    if(options.unreadable)return Response.json({message:'success',data:[]});
    const q=new URL(url).searchParams, uid=q.get('userid');

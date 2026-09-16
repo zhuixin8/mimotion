@@ -12,6 +12,7 @@ test('workerd + D1 + queue: actual delivery, durable delayed checks and duplicat
   bindings:{APP_ORIGIN:'https://local.test',MASTER_SECRET:'runtime-test-only',MAX_ACCOUNTS:'200'},d1Databases:['DB'],queueProducers:{JOBS:'jobs'},queueConsumers:{jobs:{maxBatchSize:1,maxBatchTimeout:0,maxRetries:3,deadLetterQueue:'dead'}},
   outboundService:async req=>{
    const url=new URL(req.url);
+   if(url.pathname.includes('getUserInfo.json'))return Response.json({message:'success'});
    if(url.pathname.includes('/app_tokens'))return Response.json({result:'ok',token_info:{app_token:'refreshed-test'}});
    if(url.pathname.includes('/band_data')){
     if(req.method==='POST'){posts++;return Response.json({message:'success'});}

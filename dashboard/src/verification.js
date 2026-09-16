@@ -1,4 +1,4 @@
-import {fetchJSON, UserError, unb64} from './security.js';
+import {fetchJSON, UserError, UpstreamError, unb64} from './security.js';
 
 // Protocol references and response shapes are documented in README.md.
 export function parseDaySteps(data, day) {
@@ -26,10 +26,15 @@ export async function readDaySteps(tokens, day) {
   if (!response.ok || data.message !== 'success') throw new UserError('暂时无法读取 Zepp 云端步数，请稍后重新核对。', 502);
   return parseDaySteps(data,day);
 }
-export async function checkConnection(tokens) {
+export async function isAppTokenValid(tokens) {
   const params = new URLSearchParams({userid:String(tokens.user_id),r:crypto.randomUUID(),appid:'428135909242707968',channel:'Normal',country:'CN',cv:'50818_6.14.0',device:'android_31',device_type:'android_phone',lang:'zh_CN',timezone:'Asia/Shanghai',v:'2.0'});
   const {response,data} = await fetchJSON('https://api-mifit-cn3.zepp.com/huami.health.getUserInfo.json?' + params, {headers:{apptoken:tokens.app_token,appname:'com.xiaomi.hm.health',appplatform:'android_phone','user-agent':'MiFit6.14.0 (M2007J1SC; Android 12; Density/2.75)'}}, 'Zepp 账号连接接口');
-  if (!response.ok || data.message !== 'success') throw new UserError('账号连接测试未通过，请稍后重试或重新登录。', 502);
+  if(response.status===401||response.status===403)return false;
+  if(!response.ok||data.message!=='success')throw new UpstreamError('暂时无法确认 Zepp 凭据状态，未尝试重新登录。','response_format');
+  return true;
+}
+export async function checkConnection(tokens) {
+  if(!await isAppTokenValid(tokens))throw new UserError('账号连接测试未通过，请稍后重试或重新登录。',502);
 }
 export function outcome(observed, target) {
   return observed === null ? 'unavailable' : observed >= target ? 'matched' : 'below_target';
