@@ -21,7 +21,7 @@ export function bandPayload(tokens, step, day) {
   data[0].date = day;
   const summary = JSON.parse(data[0].summary); summary.stp.ttl = step;
   data[0].summary = JSON.stringify(summary);
-  return new URLSearchParams({userid:String(tokens.user_id),last_sync_data_time:'1597306380',device_type:'0',last_deviceid:device,data_json:JSON.stringify(data)});
+  return new URLSearchParams({userid:String(tokens.user_id),last_sync_data_time:String(Math.floor(Date.now()/1000)),device_type:'0',last_deviceid:device,data_json:JSON.stringify(data)});
 }
 export async function submitSteps(tokens, step, day) {
   const {response, data} = await fetchJSON('https://api-mifit-cn.huami.com/v1/data/band_data.json?&t=' + Date.now() + '&r=' + crypto.randomUUID(), {

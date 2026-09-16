@@ -162,6 +162,12 @@ npx wrangler deploy
 维护内容时编辑 `src/help.html`、`src/help.css`、`src/help.js.txt` 和 `src/guide-images/`。SVG 按 text 导入，路由使用固定白名单；不开放任意文件读取。使用指南不会触发登录、兑换或执行任务。
 
 
+## Zepp 设备查询与同步时间
+
+设备查询使用 GET `/v1/device/lists.json`，解析 `code=1` 和 `data` 列表，核对设备所属 `uid` 后保存唯一的手环设备编号；不把查询失败当成设备列表为空，也不通过登录流程创建新设备。协议参考 [netcccyun/toolbox 的 XiaomiSport.php](https://github.com/netcccyun/toolbox/blob/70c00a945d6895d0c7e0c03f982567b29ceeae82/plugin/utility/sport/XiaomiSport.php)，本模块仅实现只读查询。存在多个不同手环时不自动选择。
+
+步数提交的 `last_sync_data_time` 使用实际提交时的 Unix 秒时间戳，避免向设备记录写入旧模板中的 2020 年固定值。设备已绑定、提交已接收、Zepp 云端读回达到目标均不能单独证明微信已同步，仍须在微信端确认。
+
 ## 登录连接测试复用
 
 登录返回实际的 `check.state`（completed、cached、pending、queued、running、inactive、unavailable）及可用的任务 ID、上次检查时间。普通登录复用最新一条已成功且在当天最近 30 分钟内完成的连接测试；首次建立账号资料或 `needs_login` 恢复登录忽略成功缓存。最新测试失败、跨北京时间日期或超过 30 分钟时重新测试。缓存只省略额外的连接诊断，不省略 Zepp 登录验证。

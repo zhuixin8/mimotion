@@ -1,4 +1,5 @@
 import {aesCBC, random, fetchJSON, UserError} from './security.js';
+import {readBoundDevice} from './devices.js';
 export function validate(data) {
   let account = typeof data.account === 'string' ? data.account.trim() : '';
   if (account.length > 254) throw new UserError('账号长度无效。');
@@ -41,9 +42,8 @@ export async function loginZepp(data) {
   const stamp = String(Date.now());
   const tokens = {access_token: access, login_type: phone ? 'huami_phone' : 'email', login_token: info.login_token, app_token: info.app_token, user_id: info.user_id, device_id: device, access_token_time: stamp, login_token_time: stamp, app_token_time: stamp};
   try {
-    const deviceResult = await fetchJSON('https://api-mifit-cn.huami.com/v1/device/binds.json?userid=' + encodeURIComponent(info.user_id), {headers: {apptoken: info.app_token, 'user-agent': headers['user-agent']}});
-    const bound = deviceResult.data.items?.find(item => item.deviceType === 0 && (item.deviceId || item.mac));
-    if (bound) tokens.bound_device_id = String(bound.deviceId || bound.mac).replaceAll(':', '').toUpperCase();
+    const bound = await readBoundDevice(tokens);
+    if (bound) {tokens.bound_device_id=bound;tokens.bound_device_source='zepp-account';}
   } catch { /* Device lookup is optional; never expose its upstream response. */ }
   const key = random(12);
   return {config: {USER: account, PWD: password, MIN_STEP: String(lo), MAX_STEP: String(hi)}, aes_key: key,

@@ -16,6 +16,9 @@ test('valid cached credentials run without refresh or a new client login',async(
  assert.equal(env.db.prepare('SELECT status FROM runs').get().status,'success');
  assert.equal(mock.calls.filter(c=>c.url.includes('/app_tokens')||c.url.includes('/v2/client/login')||c.url.includes('/registrations/tokens')).length,0);
  assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,1);
+ const submission=mock.calls.find(c=>c.url.includes('/band_data')&&c.opts.method==='POST');
+ assert.ok(Math.abs(Number(submission.opts.body.get('last_sync_data_time'))-time())<=5);
+ assert.equal(submission.opts.body.get('last_deviceid'),'ABCDEF123456');
  const tokens=await open(env.db.prepare('SELECT credentials FROM accounts').get().credentials,env.MASTER_SECRET,'zepp:A');assert.equal(tokens.app_token,'app-A');
 });
 
@@ -241,7 +244,7 @@ function zeppMock(t,options={}){const calls=[];const cloud=new Map();let active=
  t.mock.method(globalThis,'fetch',async(url,opts={})=>{url=String(url);calls.push({url,opts});
  if(url.includes('/registrations/tokens'))return new Response(null,{status:303,headers:{Location:'https://example.test/?access=valid-access'}});
  if(url.includes('/v2/client/login')){assert.equal(new Headers(opts.headers).has('x-hm-ekv'),false);return Response.json({result:'ok',token_info:{login_token:'login-token',app_token:'app-token',user_id:options.userId||'verified-user'}});}
- if(url.includes('/device/binds.json'))return Response.json({items:[]});
+ if(url.includes('/device/lists.json'))return Response.json({code:1,data:[]});
  if(url.includes('/client/app_tokens')){if(options.expired)return Response.json({result:'fail'},{status:401});return Response.json({result:'ok',token_info:{app_token:'refreshed-'+new URL(url).searchParams.get('login_token')}});}
  if(url.includes('getUserInfo.json'))return options.validApp||String(new Headers(opts.headers).get('apptoken')).startsWith('refreshed-')?Response.json({message:'success'}):Response.json({message:'unauthorized'},{status:401});
  if(url.includes('/band_data.json')&&opts.method!=='POST'){
