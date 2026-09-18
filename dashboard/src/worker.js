@@ -115,6 +115,13 @@ async function route(request, env) {
       if((await membership(env,s.id)).suspended)throw new UserError('账号已停用，请联系管理员。',403);
       return json(await redeem(env,s.id,data.code));
     }
+    if(path==='/api/pause'){
+      await env.DB.batch([
+        query(env,'UPDATE accounts SET enabled=0,updated_at=? WHERE id=?',seconds(),s.id),
+        query(env,"UPDATE runs SET status='skipped',message='用户已暂停自动执行',finished_at=?,updated_at=? WHERE account_id=? AND kind='schedule' AND status IN ('pending','queued')",seconds(),seconds(),s.id)
+      ]);
+      return json({ok:true});
+    }
     if (path === '/api/check' || path === '/api/verify') {
       await requireMembership(env,s.id);
       let source = null;
@@ -122,9 +129,11 @@ async function route(request, env) {
         if(typeof data.id !== 'string')throw new UserError('请选择要核对的执行记录。');
         source = await query(env, "SELECT id,day,step FROM runs WHERE id=? AND account_id=? AND kind IN ('manual','schedule') AND status IN ('success','unknown')", data.id,s.id).first();
         if(!source)throw new UserError('执行记录不存在或暂时无法核对。',404);
+        const recent=await query(env,"SELECT id FROM runs WHERE account_id=? AND day=? AND (checked_at>? OR (kind='verify' AND status IN ('pending','queued','running'))) ORDER BY created_at DESC LIMIT 1",s.id,source.day,seconds()-600).first();
+        if(recent)return json({ok:true,id:recent.id,reused:true},202);
       }
       await limit(env,'check:'+s.id,1,60);
-      if(!source){const check=await connectionCheck(env,s.id,{force:true});return json({ok:true,id:check.id,check},202);}
+      if(!source){const check=await connectionCheck(env,s.id);return json({ok:true,id:check.id,check},202);}
       return json({ok:true,id:await enqueue(env,s.account,source?'verify':'check',Date.now(),source)},202);
     }
     if (path === '/api/settings') {

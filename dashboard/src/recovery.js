@@ -10,15 +10,16 @@ export async function dispatch(env, id) {
   catch { await query(env,"UPDATE runs SET status='pending',delivered_at=0,message='排队暂时不可用，将自动恢复' WHERE id=? AND status='queued'",id).run(); }
 }
 
-// Two durable, read-only follow-ups. D1 batch makes their creation and parent state atomic.
+// One delayed check only for uncertain submission or an unavailable readback.
 export async function armVerification(env, id = null) {
   const t=seconds(), filter=`kind IN ('manual','schedule') AND status IN ('success','unknown') AND verification!='matched'
+    AND (status='unknown' OR verification IN ('unavailable','not_checked'))
     AND auto_checks_scheduled=0 ${id?'AND id=?':''}`;
   const args=id?[id]:[];
   await env.DB.batch([
-    ...[1,2].map(round=>query(env,`INSERT INTO runs(id,account_id,slot,kind,day,step,parent_id,auto_round,next_attempt_at,created_at,updated_at,message)
+    ...[1].map(round=>query(env,`INSERT INTO runs(id,account_id,slot,kind,day,step,parent_id,auto_round,next_attempt_at,created_at,updated_at,message)
       SELECT lower(hex(randomblob(16))),account_id,'auto-verify:'||id||':${round}','verify',day,step,id,${round},?,?,?,'等待自动核对（只查询）'
-      FROM runs WHERE ${filter} ON CONFLICT(account_id,slot) DO NOTHING`,t+(round===1?30:120),t,t,...args)),
+      FROM runs WHERE ${filter} ON CONFLICT(account_id,slot) DO NOTHING`,t+300,t,t,...args)),
     query(env,`UPDATE runs SET auto_checks_scheduled=1,verification='waiting' WHERE ${filter}`, ...args)
   ]);
   if(id){

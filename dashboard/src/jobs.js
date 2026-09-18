@@ -60,6 +60,10 @@ export async function consume(message, env) {
       WHERE id=? AND status IN ('pending','queued') AND next_attempt_at<=?`,lease,seconds(),seconds(),run.id,seconds()).run();
     if(!result.meta.changes)return;
     claimed=true;run.attempt_count++;
+    if(run.kind==='verify'&&run.auto_round){
+      const source=await query(env,'SELECT status,verification,evidence_state FROM runs WHERE id=? AND account_id=?',run.parent_id,account.id).first();
+      if(run.auto_round>1||!source||source.verification==='matched'||(source.status==='success'&&!['unavailable','not_checked'].includes(source.verification)&&!(source.verification==='waiting'&&source.evidence_state==='unavailable'))){await finish('skipped','已有核对结果，不再重复查询');return;}
+    }
     const tokens=await open(account.credentials,env.MASTER_SECRET,'zepp:'+account.id);
     try{await refreshToken(tokens);}catch(e){
       if(e instanceof UserError&&e.status===401)await query(env,'UPDATE accounts SET needs_login=1,enabled=0 WHERE id=? AND lease_id=? AND session_version=?',account.id,lease,account.session_version).run();
@@ -67,7 +71,7 @@ export async function consume(message, env) {
     }
     await query(env,'UPDATE accounts SET credentials=?,updated_at=? WHERE id=? AND lease_id=? AND session_version=?',await seal(tokens,env.MASTER_SECRET,'zepp:'+account.id),seconds(),account.id,lease,account.session_version).run();
     if(run.kind==='check'){
-      await checkConnection(tokens);
+      // refreshToken already verified or renewed the credentials above.
       let evidence=unavailableEvidence();try{evidence=await readDayEvidence(tokens,run.day);}catch{}
       const observed=evidence.observed;
       await query(env,'UPDATE runs SET observed_step=?,summary_step=?,detail_step=?,evidence_state=?,verification=?,checked_at=? WHERE id=? AND execution_id=?',observed,evidence.summary,evidence.detail,evidence.state,observed===null?evidenceOutcome(evidence,0):'readable',seconds(),run.id,lease).run();
@@ -94,7 +98,8 @@ export async function consume(message, env) {
     run.step=Math.max(run.step,prior?.step||0,before||0);
     try{await requireMembership(env,account.id);}catch(e){if(!(e instanceof UserError))throw e;await finish('skipped',e.message);return;}
     // Fence and renew immediately before the ONLY write. Persist intent before sending.
-    const fence=await query(env,'UPDATE accounts SET lease_until=? WHERE id=? AND lease_id=? AND lease_until>?',seconds()+300,account.id,lease,seconds()).run();
+    if(run.kind==='schedule'&&!(await query(env,'SELECT enabled FROM accounts WHERE id=?',account.id).first())?.enabled){await finish('skipped','自动执行已暂停，本次未提交');return;}
+    const fence=await query(env,"UPDATE accounts SET lease_until=? WHERE id=? AND lease_id=? AND lease_until>? AND (?!='schedule' OR enabled=1)",seconds()+300,account.id,lease,seconds(),run.kind).run();
     if(!fence.meta.changes)throw new UserError('执行锁已失效，本次未提交。',409);
     if(run.day!==beijing().slice(0,10)){await finish('skipped','已跨天，未提交');return;}
     const intent=await query(env,"UPDATE runs SET phase='submitting',step=?,before_step=?,message='正在提交步数',updated_at=? WHERE id=? AND execution_id=? AND status='running' AND phase='preparing'",run.step,before,seconds(),run.id,lease).run();

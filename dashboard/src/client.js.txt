@@ -1,11 +1,11 @@
 const $=id=>document.getElementById(id);
 let historyMode='daily',dailyPage=0,dailyMore=false,dailyRequest=0,dailyPolling=false;
 let state=null,busy=false,polling=false,page=0,hasMore=false,nextPoll=0,currentView='overview',labClaims=null;
-const views={'sync-lab':['设备与同步诊断','分别核对设备、Zepp 明细与第三方同步。'],overview:['运行概览','查看账号状态，快速测试与执行。'],plan:['步数计划','设置每日目标，管理自动执行。'],history:['执行记录','按天查看最后提交步数，按需展开过程。'],membership:['激活与续期','管理使用期，兑换激活码。']};
+const views={help:['帮助与支持','使用指南与按需排查。'],'sync-lab':['设备与同步诊断','分别核对设备、Zepp 明细与第三方同步。'],overview:['运行概览','查看今日提交和下次安排。'],plan:['步数计划','设置每日目标，管理自动执行。'],history:['执行记录','按天查看最后提交步数，按需展开过程。'],membership:['激活与续期','管理使用期，兑换激活码。']};
 function showView(view,focus=false){
  currentView=views[view]?view:'overview';
  document.querySelectorAll('[data-page]').forEach(p=>p.hidden=p.dataset.page!==currentView||!state?.signed_in);
- document.querySelectorAll('.nav-item').forEach(b=>{if(b.dataset.view===currentView)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
+ document.querySelectorAll('.nav-item').forEach(b=>{if(b.dataset.view===(currentView==='sync-lab'?'help':currentView))b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
  $('view-title').textContent=views[currentView][0];$('view-description').textContent=views[currentView][1];
  if(focus)$('view-title').focus({preventScroll:true});
  if(currentView==='plan')renderSchedule();
@@ -30,7 +30,8 @@ function syncAccess(access=state?.account?.membership){
  $('member-reference').textContent=state.account.id;
  const status=access.suspended?'已停用':active?'使用中':access.expires_at?'已到期':'待激活';
  $('access-badge').textContent=status;$('access-badge').className='access-badge '+(active?'is-active':'is-inactive');
- $('overview-access').textContent=status;
+ $('overview-access').textContent=active?'剩余 '+Math.max(1,Math.ceil((access.expires_at*1000-Date.now())/86400000))+' 天':status;
+ $('pause-plan').hidden=!state.account.enabled; $('pause-plan').disabled=busy;
  $('overview-expiry').textContent=access.expires_at?'到期 '+when(access.expires_at):'兑换激活码即可开通';
  $('overview-plan').textContent=!active?'不可执行':state.account.needs_login?'需重新登录':state.account.enabled?'已开启':'已暂停';
  $('overview-range').textContent=Number(state.account.min_step).toLocaleString()+' – '+Number(state.account.max_step).toLocaleString()+' 步 / 天';
@@ -45,12 +46,16 @@ let scheduleRuntime=null,scheduleReceivedAt=0;
 function renderRuntime(runtime){
  scheduleRuntime=runtime;scheduleReceivedAt=Date.now();renderSchedule();
  const status={pending:'等待排队',queued:'排队中',running:'执行中',success:'接口已接收',failed:'执行失败',unknown:'结果待确认',skipped:'已跳过'};
- const r=runtime.latest;$('runtime-latest').textContent=r?({matched:'汇总与明细达到目标',inconsistent:'汇总与明细不一致',summary_only:'仅汇总已读取'}[r.verification]||status[r.status]||r.status):'尚未执行';
- $('runtime-latest-time').textContent=r?when(r.finished_at||r.created_at)+' · '+(r.kind==='manual'?'手动':'自动'):'可先测试连接，再执行一次';
+ const r=runtime.latest;$('runtime-latest').textContent=r?(status[r.status]||r.status)+(r.status==='success'?' · '+steps(r.step):''):'尚未执行';
+ $('runtime-latest-time').textContent=r?when(r.finished_at||r.created_at)+' · '+(r.kind==='manual'?'手动':'自动'):'开启计划后等待自动执行即可';
  $('runtime-next').textContent=runtime.next.at?when(runtime.next.at):'暂无安排';$('runtime-next-reason').textContent=runtime.next.reason;
+ const accepted=runtime.todayAccepted;
+ $('overview-steps').textContent=accepted?steps(accepted.step):'暂无提交';
+ $('overview-accepted-time').textContent=accepted?'接收于 '+when(accepted.finished_at||accepted.created_at):'今天尚无接收记录';
+ $('overview-next').textContent=runtime.next.at?'下次 '+when(runtime.next.at):runtime.next.reason;
  const reading=runtime.reading;
- $('runtime-reading').textContent=reading?(reading.observed_step!==null?steps(reading.observed_step):reading.evidence_state==='inconsistent'?'汇总与明细不一致':reading.evidence_state==='summary_only'?'仅有汇总，未核实':'暂时无法核实'):'尚未读取';
- $('runtime-reading-time').textContent=runtime.reading?'数据日期 '+runtime.reading.day+' · 读取于 '+when(runtime.reading.checked_at)+(reading.evidence_state==='inconsistent'||reading.evidence_state==='summary_only'?' · 汇总 '+steps(reading.summary_step)+' / 明细 '+steps(reading.detail_step):''):'测试连接后显示云端读数';
+ $('connection-brief').textContent=state.account.needs_login?'需要恢复连接':reading?.checked_at?'最近检查 '+when(reading.checked_at):'暂无连接检查记录';
+
 }
 function renderSchedule(){
  if(!state?.signed_in||!scheduleRuntime)return;
@@ -70,7 +75,7 @@ function renderSchedule(){
  $('schedule-time').textContent=reason?'暂无安排':nextTime;
  $('schedule-day').textContent=active?(nextDay===day?'今天':'明天'):'';
  const remaining=Math.max(0,Math.ceil((next.at*1000-now)/1000)),h=Math.floor(remaining/3600),m=Math.floor(remaining%3600/60),s=remaining%60;
- $('schedule-countdown').textContent=reason|| (stale?'状态待刷新，请查看最新执行记录':due?'已到计划时间，等待状态更新':'还有 '+(h?h+' 小时 ':'')+String(m).padStart(2,'0')+' 分 '+String(s).padStart(2,'0')+' 秒');
+ $('schedule-countdown').textContent=reason|| (stale?'状态待刷新，请查看最新执行记录':due?'已到计划时间，等待状态更新':'还有 '+(h?h+' 小时 ':'')+(m||(!h?1:0))+' 分钟');
  $('schedule-reason').textContent=reason?'开启自动执行并保存，且使用期有效时，才会按计划运行。':next.reason;
  $('schedule-draft').hidden=$('enabled').checked===!!a.enabled;
  const dayStart=Date.parse(day+'T00:00:00+08:00');
@@ -111,8 +116,8 @@ async function runs(){
  const params=new URLSearchParams({page:String(page),filter:$('filter-status').value,day:$('filter-day').value});
  const data=await api('/api/runs?'+params);if(!state?.signed_in||state.csrf!==session)return;
  if(data.runtime.plan)Object.assign(state.account,data.runtime.plan);syncAccess(data.membership);renderRuntime(data.runtime);const box=$('runs-list');const expanded=new Set([...box.querySelectorAll('details[open]')].map(e=>e.dataset.id));box.replaceChildren();
- $('stat-total').textContent=data.stats.total;$('stat-accepted').textContent=data.stats.accepted;$('stat-matched').textContent=data.stats.matched;
- const c=data.check;$('connection-result').textContent=!c?(state.account.membership.active?'尚未测试，点击「测试连接」检查连接。':'使用期有效后可测试账号连接。'):['pending','queued','running'].includes(c.status)?({pending:'测试任务已保存，等待队列恢复；无需重复点击。',queued:'连接测试排队中，请稍候…',running:'正在测试连接，请稍候…'}[c.status]):(c.status==='success'?'连接测试通过':'连接测试未通过')+' · '+c.message+(c.observed_step!==null?' '+c.day+' 云端：'+steps(c.observed_step):'')+' · '+when(c.finished_at||c.created_at);
+ $('overview-summary').textContent='今天已接收 '+data.stats.accepted+' 次提交'+(data.stats.active?'，有任务正在处理中。':'。')+' 每天最后接收的步数可在每日记录查询。';
+ const c=data.check;$('connection-result').textContent=!c?(state.account.membership.active?'尚未测试，在帮助中检查连接检查连接。':'使用期有效后可测试账号连接。'):['pending','queued','running'].includes(c.status)?({pending:'测试任务已保存，等待队列恢复；无需重复点击。',queued:'连接测试排队中，请稍候…',running:'正在测试连接，请稍候…'}[c.status]):(c.status==='success'?'连接测试通过':'连接测试未通过')+' · '+c.message+(c.observed_step!==null?' '+c.day+' 云端：'+steps(c.observed_step):'')+' · '+when(c.finished_at||c.created_at);
  hasMore=data.has_more;$('prev-page').hidden=page===0;$('next-page').hidden=!hasMore;$('page-label').textContent='第 '+(page+1)+' 页';
  const active=data.stats.active||data.runs.some(r=>['pending','queued','running'].includes(r.status));nextPoll=Date.now()+(active?3000:30000);
  $('history-update').textContent='更新于 '+when(Math.floor(Date.now()/1000))+(page===0?(active?' · 执行中每 3 秒刷新':' · 每 30 秒刷新'):' · 翻页期间暂停自动刷新');
@@ -120,10 +125,10 @@ async function runs(){
  for(const r of data.runs){
   const check=r.kind==='check',verification=r.kind==='verify',diagnostic=check||verification;
   const names={manual:'手动执行',schedule:'自动执行',check:'只读连接测试',verify:'只读效果核对'};
-  const states={pending:'等待排队',queued:'排队中',running:'执行中',success:diagnostic?'测试完成':'接口已接收',failed:'失败',unknown:'提交结果待确认',skipped:'已跳过'};
+  const states={pending:'等待排队',queued:'排队中',running:'执行中',success:check?'连接检查完成':verification?'核对完成':'接口已接收',failed:'失败',unknown:'提交结果待确认',skipped:'已跳过'};
   const row=element('article',undefined,'run-record'),head=element('div',undefined,'record-head');
-  head.append(element('div',names[r.kind]+(check?'':' · 目标 '+steps(r.step)),'record-title'),element('span',r.verification==='matched'?'云端达到目标':states[r.status]||r.status,'badge '+(r.verification==='matched'?'good':['failed','unknown'].includes(r.status)?'attention':'')));
-  row.append(head,element('div',when(r.created_at)+' · 数据日期 '+r.day,'record-meta'),element('p',r.message+(diagnostic?'':' · '+(verifyLabels[r.verification]||'尚未核对')),'record-result'));
+  head.append(element('div',(verification&&r.auto_round?'第 '+r.auto_round+' 次自动核对':names[r.kind])+(check?'':' · 目标 '+steps(r.step)),'record-title'),element('span',r.verification==='matched'?'云端达到目标':states[r.status]||r.status,'badge '+(r.verification==='matched'?'good':['failed','unknown'].includes(r.status)?'attention':'')));
+  row.append(head,element('div',(r.finished_at?'完成于 '+when(r.finished_at):'创建于 '+when(r.created_at))+' · 数据日期 '+r.day,'record-meta'),element('p',r.message+(diagnostic?'':' · '+(verifyLabels[r.verification]||'尚未核对')),'record-result'));
   if(r.evidence_state==='inconsistent'||r.evidence_state==='summary_only')row.append(element('p','汇总：'+steps(r.summary_step)+' · 分钟明细：'+steps(r.detail_step)+' · 尚未确认 App / 微信同步','record-result'));
   const detail=element('details');detail.dataset.id=r.id;detail.open=expanded.has(r.id);detail.append(element('summary','查看测试过程与步数对比'));
   const grid=element('div',undefined,'record-details');
@@ -131,22 +136,23 @@ async function runs(){
   for(const [label,value] of [['任务编号',r.id],['开始 / 完成',when(r.started_at)+' / '+when(r.finished_at)],['提交前读数',check||verification?'本次不提交':steps(r.before_step)],['核对时汇总',steps(r.summary_step)],['分钟明细合计',steps(r.detail_step)],['一致性已确认的读数',steps(r.observed_step)],['读数变化',diagnostic?'本次只查询':diff],['核对结果',verifyLabels[r.verification]||'尚未核对'],['最近核对时间',when(r.checked_at)],['执行尝试',String(r.attempt_count||0)+' 次'],['异常分类',errorLabels[r.error_code]||(r.error_code?'执行异常':'无')],['预计重试 / 核对',r.next_attempt_at&&['pending','queued'].includes(r.status)?when(r.next_attempt_at):'—']]){const cell=element('div');cell.append(element('span',label),element('strong',value));grid.append(cell);}
   if(r.parent_id){const cell=element('div');cell.append(element('span','对应执行记录'),element('strong',r.parent_id));grid.append(cell);}
   detail.append(grid,element('p','读回数值仅反映 Zepp 云端记录，不证明第三方 App 已同步，也不能排除其他设备同时写入。','hint'));
-  if(!diagnostic&&['success','unknown'].includes(r.status)){const button=element('button','重新核对（不重新提交）','text-button');button.type='button';button.dataset.memberAction='true';button.disabled=busy||!state.account.membership.active;button.onclick=()=>action(async()=>{await api('/api/verify',{id:r.id});resetHistory();await runs();notice('已安排只读核对，稍后自动更新原记录的核对结果。');});detail.append(button);}
+  if(!diagnostic&&(r.status==='unknown'||r.status==='success'&&r.verification==='unavailable')){const button=element('button','重新核对（不重新提交）','text-button');button.type='button';button.dataset.memberAction='true';button.disabled=busy||!state.account.membership.active;button.onclick=()=>action(async()=>{const result=await api('/api/verify',{id:r.id});resetHistory();await runs();notice(result.reused?'已复用近期核对结果或正在处理的任务，无需重复查询。':'已安排只读核对，稍后更新结果。');});detail.append(button);}
   row.append(detail);box.append(row);
  }
 }
 $('toggle-password').onclick=()=>{const p=$('password');p.type=p.type==='password'?'text':'password';$('toggle-password').textContent=p.type==='password'?'显示':'隐藏';};
 function checkNotice(check){
  const state=check?.state;
- if(state==='completed')return '连接测试已通过，结果与检查时间见「账号连接」。';
+ if(state==='completed')return '连接测试已通过，结果与检查时间见「帮助与支持 → 连接排查」。';
  if(state==='cached')return '上次连接测试已通过'+(check.checked_at?'（'+when(check.checked_at)+'）':'')+'，本次展示已有结果。';
  if(state==='running')return '已有连接测试正在执行，已复用该任务。';
  if(state==='queued')return check.reused?'已有连接测试排队中，已复用该任务。':'已安排只读连接测试，不会修改步数。';
  if(state==='pending')return '测试任务已保存，等待队列恢复；无需重复点击。';
  if(state==='inactive')return '使用期有效后可测试连接。';
- return '暂时无法确认测试任务状态，可稍后查看记录或点击「测试连接」。';
+ return '暂时无法确认测试任务状态，可稍后查看记录或在帮助中检查连接。';
 }
 $('login-form').onsubmit=e=>{e.preventDefault();action(async()=>{const data={account:$('account').value,password:$('password').value,min_step:18000,max_step:25000,consent:$('consent').checked};$('password').value='';notice('正在验证 Zepp Life，请稍候…',false,{duration:0});const login=await api('/api/login',data);resetHistory();currentView='overview';await load();if(!state.account.membership.active)showView('membership');notice(state.account.membership.active?'登录成功。'+checkNotice(login.check):state.account.membership.suspended?'登录成功，账号已停用，请联系管理员。':'登录成功，请先兑换激活码开通使用期。');});};
+$('pause-plan').onclick=()=>action(async()=>{await api('/api/pause',{});state.account.enabled=false;$('enabled').checked=false;await runs();notice('自动执行已暂停，已排队的自动任务已取消。已发出的提交无法撤回。');});
 $('settings-form').onsubmit=e=>{e.preventDefault();action(async()=>{await api('/api/settings',{min_step:$('min-step').value,max_step:$('max-step').value,enabled:$('enabled').checked});await load();notice('计划已保存。');});};
 $('redeem-form').onsubmit=e=>{e.preventDefault();action(async()=>{const code=$('activation-code').value;const r=await api('/api/redeem',{code});$('activation-code').value='';await load();notice(r.already_redeemed?'此码此前已兑换，期限没有重复增加。':'激活成功，已增加 '+r.receipt.duration_days+' 天使用期；到期时间：'+when(r.membership.expires_at)+'。');});};
 $('test-connection').onclick=()=>action(async()=>{const result=await api('/api/check',{});resetHistory();await runs();notice(checkNotice(result.check));});
@@ -212,11 +218,6 @@ async function finishReconnect(){
  await runs();if(currentView==='sync-lab')await loadLabHistory();
  notice('Zepp 连接已恢复，仍在当前页面。计划开关保持原状；刚才的操作未自动重新执行。');
 }
-$('renew-token').onclick=()=>action(async()=>{
- notice('正在尝试续用现有凭据，不会使用密码重新登录…',false,{duration:0});
- try{await api('/api/renew',{});await finishReconnect();}
- catch(e){await refreshAuthStatus();$('reconnect-details').open=true;throw e;}
-});
 $('reconnect-form').onsubmit=e=>{e.preventDefault();action(async()=>{
  const data={account:$('reconnect-account').value,password:$('reconnect-password').value,consent:$('reconnect-consent').checked};
  $('reconnect-password').value='';

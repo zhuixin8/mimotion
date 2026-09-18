@@ -131,7 +131,7 @@ test('login during a running read-only check reuses it and old work cannot overw
   assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,0);
  }
 });
-test('login reuses recent success; credential recovery and manual checks bypass that cache',async(t)=>{
+test('login and manual checks reuse recent success; credential recovery bypasses cache',async(t)=>{
  const env=environment(),mock=zeppMock(t);env.db.prepare('UPDATE site_settings SET new_user_gift_days=7').run();
  const input={account:'cache@example.com',password:'dummy',consent:true,min_step:1,max_step:2};
  const first=await api(env,'/api/login',input);assert.equal(first.status,200);const a=await first.json();assert.equal(a.check.state,'queued');assert.equal(a.check.reused,false);
@@ -141,7 +141,7 @@ test('login reuses recent success; credential recovery and manual checks bypass 
  env.db.prepare('UPDATE accounts SET needs_login=1').run();
  const recovered=await api(env,'/api/login',input),c=await recovered.json();assert.equal(c.check.state,'queued');assert.notEqual(c.check.id,a.check.id);await consume(env,msg(c.check.id));
  const cookie=recovered.headers.get('set-cookie').split(';')[0],s=await (await api(env,'/api/status',undefined,{cookie})).json(),session={cookie,csrf:s.csrf};
- const manual=await api(env,'/api/check',{},session);assert.equal(manual.status,202);const m=await manual.json();assert.equal(m.check.state,'queued');assert.notEqual(m.id,c.check.id);
+ const manual=await api(env,'/api/check',{},session);assert.equal(manual.status,202);const m=await manual.json();assert.equal(m.check.state,'cached');assert.equal(m.id,c.check.id);
  assert.equal((await api(env,'/api/check',{},session)).status,429);assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')&&c.opts.method==='POST').length,0);
 });
 test('connection cache expires at 30 minutes, rejects prior-day readings and honors the latest failure',async()=>{
@@ -247,10 +247,10 @@ test('legacy running jobs without an execution marker are never replayed',async(
 });
 
 test('follow-up creation rolls back atomically and cron recovers without repeating POST',async(t)=>{
- const env=environment();await account(env,'A',0);addRun(env,'r','A');const mock=zeppMock(t,{below:true});
- env.db.exec("CREATE TRIGGER fail_followup BEFORE INSERT ON runs WHEN NEW.auto_round=2 BEGIN SELECT RAISE(ABORT,'injected batch failure'); END;");
+ const env=environment();await account(env,'A',0);addRun(env,'r','A');const mock=zeppMock(t,{unreadable:true});
+ env.db.exec("CREATE TRIGGER fail_followup BEFORE INSERT ON runs WHEN NEW.auto_round=1 BEGIN SELECT RAISE(ABORT,'injected batch failure'); END;");
  await consume(env,msg('r'));let source=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(source.status,'success');assert.equal(source.auto_checks_scheduled,0);assert.equal(env.db.prepare("SELECT COUNT(*) n FROM runs WHERE parent_id='r'").get().n,0);
- env.db.exec('DROP TRIGGER fail_followup');await worker.scheduled({scheduledTime:Date.parse(day()+'T01:15:00Z')},env);source=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(source.verification,'waiting');assert.equal(env.db.prepare("SELECT COUNT(*) n FROM runs WHERE parent_id='r'").get().n,2);assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,1);
+ env.db.exec('DROP TRIGGER fail_followup');await worker.scheduled({scheduledTime:Date.parse(day()+'T01:15:00Z')},env);source=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(source.verification,'waiting');assert.equal(env.db.prepare("SELECT COUNT(*) n FROM runs WHERE parent_id='r'").get().n,1);assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,1);
 });
 
 test('safe GET retry is bounded; POST and malformed responses are never retried',async(t)=>{
@@ -279,24 +279,24 @@ test('three transient attempts stop safely and protocol changes do not expire cr
  addRun(env,'format','A');t.mock.method(globalThis,'fetch',async()=>Response.json({unexpected:true}));await consume(env,msg('format'));assert.equal(env.db.prepare("SELECT error_code FROM runs WHERE id='format'").get().error_code,'response_format');assert.equal(env.db.prepare('SELECT enabled FROM accounts').get().enabled,1);
 });
 
-test('delayed checks update the source, converge and never repeat POST',async(t)=>{
- const env=environment();await account(env,'A');addRun(env,'r','A');const mock=zeppMock(t,{below:true});await consume(env,msg('r'));
- const children=env.db.prepare('SELECT * FROM runs WHERE parent_id=? ORDER BY auto_round').all('r');assert.equal(children.length,2);assert.ok(children[0].next_attempt_at>=time()+29);assert.ok(children[1].next_attempt_at>=time()+119);
+test('one delayed check follows an unavailable readback, converges and never repeats POST',async(t)=>{
+ const env=environment();await account(env,'A');addRun(env,'r','A');const mock=zeppMock(t,{unreadable:true});await consume(env,msg('r'));
+ const children=env.db.prepare('SELECT * FROM runs WHERE parent_id=?').all('r');assert.equal(children.length,1);assert.ok(children[0].next_attempt_at>=time()+299);
  const early=msg(children[0].id);await consume(env,early);assert.equal(early.retried,true);
- env.db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').run(children[0].id);await consume(env,msg(children[0].id));assert.equal(env.db.prepare("SELECT verification FROM runs WHERE id='r'").get().verification,'waiting');
  const normal=globalThis.fetch;t.mock.method(globalThis,'fetch',async(url,opts={})=>String(url).includes('/band_data')&&opts.method!=='POST'?Response.json({message:'success',data:[{date:day(),data:minuteFixture(25000),summary:{stp:{ttl:25000}}}]}):normal(url,opts));
- env.db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').run(children[1].id);await consume(env,msg(children[1].id));const r=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(r.verification,'matched');assert.equal(r.status,'success');assert.equal(r.observed_step,25000);
- await consume(env,msg(children[1].id));assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,1);
+ env.db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').run(children[0].id);await consume(env,msg(children[0].id));
+ const r=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(r.verification,'matched');assert.equal(r.status,'success');assert.equal(r.observed_step,25000);
+ await consume(env,msg(children[0].id));assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,1);
 });
 
 test('automatic verification has a final unresolved state and expires with membership',async(t)=>{
- const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t,{below:true});await consume(env,msg('r'));
+ const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t,{unreadable:true});await consume(env,msg('r'));
  const children=env.db.prepare('SELECT id FROM runs WHERE parent_id=? ORDER BY auto_round DESC').all('r');
  for(const child of children){env.db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').run(child.id);await consume(env,msg(child.id));}
- assert.equal(env.db.prepare("SELECT verification FROM runs WHERE id='r'").get().verification,'below_target');
+ assert.equal(env.db.prepare("SELECT verification FROM runs WHERE id='r'").get().verification,'unavailable');
  addRun(env,'other','A');await consume(env,msg('other'));env.db.prepare('UPDATE memberships SET expires_at=?').run(time()-1);
  for(const c of env.db.prepare('SELECT id FROM runs WHERE parent_id=?').all('other')){env.db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').run(c.id);await consume(env,msg(c.id));}
- assert.equal(env.db.prepare("SELECT verification FROM runs WHERE id='other'").get().verification,'below_target');
+ assert.equal(env.db.prepare("SELECT verification FROM runs WHERE id='other'").get().verification,'unavailable');
 });
 
 test('database outage after accepted POST recovers as unknown and cannot resubmit',async(t)=>{
@@ -304,7 +304,7 @@ test('database outage after accepted POST recovers as unknown and cannot resubmi
  env.db.exec("CREATE TRIGGER fail_finish BEFORE UPDATE OF status ON runs WHEN NEW.id='r' AND NEW.status IN ('success','unknown') BEGIN SELECT RAISE(ABORT,'injected failure'); END;");
  await assert.rejects(consume(env,msg('r')));const interrupted=env.db.prepare("SELECT * FROM runs WHERE id='r'").get();assert.equal(interrupted.phase,'accepted');assert.equal(interrupted.status,'running');
  env.db.exec('DROP TRIGGER fail_finish');env.db.prepare("UPDATE runs SET updated_at=? WHERE id='r'").run(time()-700);
- await worker.scheduled({scheduledTime:Date.parse(day()+'T01:15:00Z')},env);assert.equal(env.db.prepare("SELECT status FROM runs WHERE id='r'").get().status,'unknown');assert.equal(env.db.prepare("SELECT COUNT(*) n FROM runs WHERE parent_id='r'").get().n,2);
+ await worker.scheduled({scheduledTime:Date.parse(day()+'T01:15:00Z')},env);assert.equal(env.db.prepare("SELECT status FROM runs WHERE id='r'").get().status,'unknown');assert.equal(env.db.prepare("SELECT COUNT(*) n FROM runs WHERE parent_id='r'").get().n,1);
  await consume(env,msg('r'));assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,1);
 });
 
@@ -363,7 +363,7 @@ test('automatic post-login diagnostic only reads; outcome includes today steps a
 
 test('accepted submission persists before/after evidence and confirmed comparison',async(t)=>{const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t);await consume(env,msg('r'));const row=env.db.prepare('SELECT * FROM runs').get();assert.equal(row.status,'success');assert.equal(row.before_step,1000);assert.equal(row.observed_step,20000);assert.equal(row.verification,'matched');});
 
-test('accepted submission with stale readback is not marked verified',async(t)=>{const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t,{below:true});await consume(env,msg('r'));const row=env.db.prepare('SELECT * FROM runs').get();assert.equal(row.status,'success');assert.equal(row.verification,'waiting');assert.equal(row.observed_step,1000);});
+test('accepted submission with stale readback is not marked verified',async(t)=>{const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t,{below:true});await consume(env,msg('r'));const row=env.db.prepare('SELECT * FROM runs').get();assert.equal(row.status,'success');assert.equal(row.verification,'below_target');assert.equal(row.observed_step,1000);});
 
 test('missing upstream rows stay null, never zero or verified success',async(t)=>{const env=environment();await account(env,'A');addRun(env,'r','A');zeppMock(t,{unreadable:true});await consume(env,msg('r'));const row=env.db.prepare('SELECT * FROM runs').get();assert.equal(row.status,'success');assert.equal(row.verification,'waiting');assert.equal(row.observed_step,null);assert.equal(row.before_step,null);});
 
@@ -467,12 +467,12 @@ test('exception filters distinguish delayed tasks and credentials; pagination is
 });
 
 
-test('summary/detail mismatch survives delayed recovery without a second POST or false success',async(t)=>{
+test('summary/detail mismatch does not schedule repeated checks or claim synchronization',async(t)=>{
  const env=environment();await account(env,'A');addRun(env,'mismatch','A');const mock=zeppMock(t,{detail:125});
  await consume(env,msg('mismatch'));
  let source=env.db.prepare("SELECT * FROM runs WHERE id='mismatch'").get();
  assert.equal(source.summary_step,20000);assert.equal(source.detail_step,125);assert.equal(source.observed_step,null);assert.equal(source.evidence_state,'inconsistent');
- const children=env.db.prepare("SELECT id FROM runs WHERE parent_id='mismatch' ORDER BY auto_round").all();
+ const children=env.db.prepare("SELECT id FROM runs WHERE parent_id='mismatch' ORDER BY auto_round").all();assert.equal(children.length,0);
  env.db.prepare("UPDATE runs SET next_attempt_at=0 WHERE parent_id='mismatch'").run();
  for(const child of children)await consume(env,msg(child.id));
  source=env.db.prepare("SELECT * FROM runs WHERE id='mismatch'").get();
@@ -495,4 +495,35 @@ test('latest inconsistent check is displayed instead of a stale earlier success'
  env.db.prepare("UPDATE runs SET summary_step=8472,detail_step=125,evidence_state='inconsistent',verification='inconsistent',checked_at=? WHERE id='new-mismatch'").run(time());
  const data=await(await api(env,'/api/runs?filter=attention',undefined,a)).json();
  assert.equal(data.runtime.reading.evidence_state,'inconsistent');assert.equal(data.runtime.reading.observed_step,null);assert.equal(data.runtime.reading.detail_step,125);assert.equal(data.runs.length,1);
+});
+
+test('pause is owner scoped, works after expiry, cancels queued schedules and never submits',async(t)=>{
+ const env=environment(),a=await account(env,'A');await account(env,'B');const mock=zeppMock(t);
+ addRun(env,'auto-A','A','schedule');addRun(env,'auto-B','B','schedule');addRun(env,'manual-A','A','manual');
+ env.db.prepare("UPDATE memberships SET expires_at=0 WHERE account_id='A'").run();
+ assert.equal((await api(env,'/api/pause',{}, {...a,csrf:'bad'})).status,403);
+ assert.equal((await api(env,'/api/pause',{},a)).status,200);
+ assert.equal(env.db.prepare("SELECT enabled FROM accounts WHERE id='A'").get().enabled,0);
+ assert.equal(env.db.prepare("SELECT enabled FROM accounts WHERE id='B'").get().enabled,1);
+ assert.equal(env.db.prepare("SELECT status FROM runs WHERE id='auto-A'").get().status,'skipped');
+ assert.equal(env.db.prepare("SELECT status FROM runs WHERE id='manual-A'").get().status,'queued');
+ assert.equal(env.db.prepare("SELECT status FROM runs WHERE id='auto-B'").get().status,'queued');
+ await consume(env,msg('auto-A'));assert.equal(mock.calls.length,0);
+});
+test('pause during preflight prevents a scheduled POST',async(t)=>{
+ const env=environment(),a=await account(env,'A');addRun(env,'r','A','schedule');const mock=zeppMock(t),normal=globalThis.fetch;
+ let once=false;t.mock.method(globalThis,'fetch',async(url,opts={})=>{if(!once&&String(url).includes('/band_data')&&opts.method!=='POST'){once=true;assert.equal((await api(env,'/api/pause',{},a)).status,200);}return normal(url,opts);});
+ await consume(env,msg('r'));assert.equal(env.db.prepare("SELECT status FROM runs WHERE id='r'").get().status,'skipped');assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,0);
+});
+test('manual recheck reuses recent daily evidence and pending checks without new upstream calls',async(t)=>{
+ const env=environment(),a=await account(env,'A'),mock=zeppMock(t);addRun(env,'source','A','manual','success');addRun(env,'read','A','check','success');
+ env.db.prepare("UPDATE runs SET checked_at=? WHERE id='read'").run(time());
+ let result=await (await api(env,'/api/verify',{id:'source'},a)).json();assert.equal(result.reused,true);assert.equal(env.sent.length,0);
+ env.db.prepare("UPDATE runs SET checked_at=0 WHERE id='read'").run();
+ result=await (await api(env,'/api/verify',{id:'source'},a)).json();assert.ok(result.id);assert.equal(env.sent.length,1);
+ const again=await (await api(env,'/api/verify',{id:'source'},a)).json();assert.equal(again.reused,true);assert.equal(env.sent.length,1);assert.equal(mock.calls.length,0);
+});
+test('valid-token connection check makes one credential probe and one data read',async(t)=>{
+ const env=environment();await account(env,'A');addRun(env,'check','A','check');const mock=zeppMock(t,{validApp:true});await consume(env,msg('check'));
+ assert.equal(mock.calls.filter(c=>c.url.includes('getUserInfo')).length,1);assert.equal(mock.calls.filter(c=>c.url.includes('/band_data')).length,1);assert.equal(mock.calls.filter(c=>c.opts.method==='POST').length,0);
 });

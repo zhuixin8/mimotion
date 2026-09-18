@@ -8,7 +8,7 @@ import {seal} from '../src/security.js';
 import {connectionCheck} from '../dist/worker.js';
 
 test('workerd + D1 + queue: actual delivery, durable delayed checks and duplicate safety',{timeout:25000},async()=>{
- const day=new Date(Date.now()+28800000).toISOString().slice(0,10),now=Math.floor(Date.now()/1000);let posts=0,observed=1000;
+ const day=new Date(Date.now()+28800000).toISOString().slice(0,10),now=Math.floor(Date.now()/1000);let posts=0,observed=null;
  const mf=new Miniflare(convertV4MiniflareOptions({workers:[{name:'app',modules:true,script:readFileSync(new URL('../dist/worker.js',import.meta.url),'utf8'),compatibilityDate:'2026-09-15',compatibilityFlags:['nodejs_compat'],
   bindings:{APP_ORIGIN:'https://local.test',MASTER_SECRET:'runtime-test-only',MAX_ACCOUNTS:'200'},d1Databases:['DB'],queueProducers:{JOBS:'jobs'},queueConsumers:{jobs:{maxBatchSize:1,maxBatchTimeout:0,maxRetries:3,deadLetterQueue:'dead'}},
   outboundService:async req=>{
@@ -17,6 +17,7 @@ test('workerd + D1 + queue: actual delivery, durable delayed checks and duplicat
    if(url.pathname.includes('/app_tokens'))return Response.json({result:'ok',token_info:{app_token:'refreshed-test'}});
    if(url.pathname.includes('/band_data')){
     if(req.method==='POST'){posts++;return Response.json({message:'success'});}
+    if(observed===null)return Response.json({message:'success',data:[]});
     return Response.json({message:'success',data:[{date:day,data:minuteFixture(observed),summary:{stp:{ttl:observed}}}]});
    }
    throw new Error('Unexpected outbound request');
@@ -39,12 +40,11 @@ test('workerd + D1 + queue: actual delivery, durable delayed checks and duplicat
   let source;
   for(let i=0;i<60;i++){source=await db.prepare("SELECT * FROM runs WHERE id='r'").first();if(source.verification==='waiting')break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(source.status,'success');assert.equal(source.phase,'accepted');assert.equal(source.verification,'waiting');assert.equal(posts,1);
-  const {results:children}=await db.prepare("SELECT * FROM runs WHERE parent_id='r' ORDER BY auto_round").all();assert.equal(children.length,2);assert.ok(children[0].next_attempt_at>=now+30);
+  const {results:children}=await db.prepare("SELECT * FROM runs WHERE parent_id='r' ORDER BY auto_round").all();assert.equal(children.length,1);assert.ok(children[0].next_attempt_at>=now+300);
   const app=await mf.getWorker(),delivery=id=>({id:crypto.randomUUID(),timestamp:new Date(),attempts:1,body:{id}});
   const early=await app.queue('jobs',[delivery(children[0].id)]);assert.equal(early.retryMessages.length,1);assert.equal(posts,1);
   observed=25000;await db.prepare('UPDATE runs SET next_attempt_at=0 WHERE id=?').bind(children[0].id).run();await app.queue('jobs',[delivery(children[0].id)]);
   assert.equal((await db.prepare("SELECT verification FROM runs WHERE id='r'").first()).verification,'matched');
-  assert.equal((await db.prepare('SELECT status FROM runs WHERE id=?').bind(children[1].id).first()).status,'skipped');
   await app.queue('jobs',[delivery('r'),delivery(children[0].id)]);assert.equal(posts,1);
   const sent=[],diagnosticEnv={DB:db,JOBS:{send:async body=>sent.push(body)}};
   const diagnostics=await Promise.all([connectionCheck(diagnosticEnv,'A'),connectionCheck(diagnosticEnv,'A',{force:true})]);
