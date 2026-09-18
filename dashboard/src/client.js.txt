@@ -19,7 +19,7 @@ function syncAthlete(){
  const mount=state?.signed_in&&['overview','plan'].includes(currentView)?$(currentView+'-athlete-slot'):null;
  if(athlete){athlete.update(state?.account,scheduleRuntime,scheduleReceivedAt,mount);return;}
  if(!mount||athleteLoading||athleteFailed)return;
- athleteLoading=import('/athlete-v2.js').then(module=>{athlete=module.createAvatar();syncAthlete();}).catch(()=>{athleteFailed=true;}).finally(()=>{athleteLoading=null;});
+ athleteLoading=import('/athlete-v3.js').then(module=>{athlete=module.createAvatar();syncAthlete();}).catch(()=>{athleteFailed=true;}).finally(()=>{athleteLoading=null;});
 }
 
 const when=t=>t?new Date(t*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';

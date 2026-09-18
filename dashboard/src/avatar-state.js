@@ -9,6 +9,6 @@ export function avatarState(account, runtime, receivedAt, now=Date.now()) {
   const task=runtime.latest;
   if (task?.status==='running') return {motion:'run',animate:true,title:'任务处理中',detail:'正在处理最近一次提交，结果请查看每日记录。'};
   if (!account.enabled) return {motion:'idle',animate:false,title:'计划已暂停',detail:'开启自动执行并保存后，将按时间表运行。'};
-  if (['queued','pending'].includes(task?.status)) return {motion:'idle',animate:true,title:'任务等待执行',detail:'任务已排队，请等待处理结果。'};
-  return {motion:'idle',animate:true,title:'自动计划已开启',detail:'按已保存的时间表执行，关闭网页也会继续。'};
+  if (['queued','pending'].includes(task?.status)) return {motion:'walk',animate:true,title:'任务等待执行',detail:'任务已排队，请等待处理结果。'};
+  return {motion:'walk',animate:true,title:'自动计划已开启',detail:'按已保存的时间表执行，关闭网页也会继续。'};
 }
