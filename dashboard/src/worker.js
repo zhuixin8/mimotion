@@ -11,6 +11,7 @@ import {random, equal, seal, open, UserError, readText, utf8, b64} from './secur
 import {loginZepp, validate} from './zepp.js';
 import {query, limit, seconds, enqueue, scheduled, consume} from './jobs.js';
 import {history} from './history.js';
+import {dailyHistory} from './daily-history.js';
 import {labAction,labHistory} from './sync-lab.js';
 import {reconnect} from './reconnect.js';
 import {publicSite} from './site.js';
@@ -100,6 +101,7 @@ async function route(request, env) {
     return json(await history(env,s.id,url));
   }
   if(path==='/api/license'&&request.method==='GET')return json(await licenseHistory(env,s.id));
+  if(path==='/api/daily-runs'&&request.method==='GET')return json(await dailyHistory(env,s.id,url));
   if(path==='/api/sync-lab'&&request.method==='GET')return json(await labHistory(env,s.id));
   if (request.method === 'POST') {
     await limit(env, 'write:' + s.id, 20, 60);

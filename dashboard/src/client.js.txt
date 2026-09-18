@@ -1,6 +1,7 @@
 const $=id=>document.getElementById(id);
+let historyMode='daily',dailyPage=0,dailyMore=false,dailyRequest=0,dailyPolling=false;
 let state=null,busy=false,polling=false,page=0,hasMore=false,nextPoll=0,currentView='overview',labClaims=null;
-const views={'sync-lab':['设备与同步诊断','分别核对设备、Zepp 明细与第三方同步。'],overview:['运行概览','查看账号状态，快速测试与执行。'],plan:['步数计划','设置每日目标，管理自动执行。'],history:['执行记录','查看任务进度与云端核对结果。'],membership:['激活与续期','管理使用期，兑换激活码。']};
+const views={'sync-lab':['设备与同步诊断','分别核对设备、Zepp 明细与第三方同步。'],overview:['运行概览','查看账号状态，快速测试与执行。'],plan:['步数计划','设置每日目标，管理自动执行。'],history:['执行记录','按天查看最后提交步数，按需展开过程。'],membership:['激活与续期','管理使用期，兑换激活码。']};
 function showView(view,focus=false){
  currentView=views[view]?view:'overview';
  document.querySelectorAll('[data-page]').forEach(p=>p.hidden=p.dataset.page!==currentView||!state?.signed_in);
@@ -8,6 +9,7 @@ function showView(view,focus=false){
  $('view-title').textContent=views[currentView][0];$('view-description').textContent=views[currentView][1];
  if(focus)$('view-title').focus({preventScroll:true});
  if(currentView==='plan')renderSchedule();
+ if(currentView==='history')setHistoryMode(historyMode);
  if(currentView==='sync-lab')loadLabHistory().catch(e=>notice(e.message,true));
 }
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>showView(b.dataset.view,true));
@@ -101,7 +103,7 @@ for(const id of ['min-step','max-step'])$(id).addEventListener('input',updateSte
 async function load(){
  state=await api('/api/status');$('loading-panel').hidden=true;$('login-panel').hidden=state.signed_in;$('account-panel').hidden=!state.signed_in;$('header-user').hidden=!state.signed_in;document.body.classList.toggle('signed-in',state.signed_in);showView(currentView);
  if(state.signed_in){const a=state.account;$('account-label').textContent=a.label;$('min-step').value=a.min_step;$('max-step').value=a.max_step;updateStepRecommendation();$('enabled').checked=a.enabled;$('account-state').textContent=a.needs_login?'登录凭据已失效，可在当前页面恢复连接。':a.enabled?'自动执行已开启，关闭网页也会继续。':'自动执行已暂停，可手动执行一次。';await runs();await licenses();}
- else{$('reconnect-panel').hidden=true;$('reconnect-password').value='';$('reconnect-account').value='';$('reconnect-consent').checked=false;labClaims=null;$('runs-list').replaceChildren();$('connection-result').textContent='尚未测试';}
+ else{$('reconnect-panel').hidden=true;$('reconnect-password').value='';$('reconnect-account').value='';$('reconnect-consent').checked=false;labClaims=null;dailyRequest++;$('daily-list').replaceChildren();$('runs-list').replaceChildren();$('connection-result').textContent='尚未测试';}
 }
 function element(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
 async function runs(){
@@ -221,3 +223,61 @@ $('reconnect-form').onsubmit=e=>{e.preventDefault();action(async()=>{
  notice('正在重新验证当前账号，请稍候…',false,{duration:0});
  await api('/api/reconnect',data);await finishReconnect();
 });};
+
+function setHistoryMode(mode){
+ historyMode=mode==='details'?'details':'daily';
+ $('daily-history-panel').hidden=historyMode!=='daily';$('detailed-history-panel').hidden=historyMode!=='details';
+ $('history-daily-tab').setAttribute('aria-pressed',String(historyMode==='daily'));$('history-detail-tab').setAttribute('aria-pressed',String(historyMode==='details'));
+ if(historyMode==='daily')loadDailyHistory().catch(e=>{$('daily-updated').textContent='读取失败：'+e.message;});
+}
+const dayStatus=d=>d.active_count?'仍有任务执行中':d.unknown_count?'有提交待确认':d.latest_status==='failed'?'末次尝试失败':d.latest_status==='skipped'?'末次尝试已跳过':d.accepted_count?'已有接收记录':'暂无成功接收';
+async function loadDayAttempts(day,box){
+ const session=state?.csrf;box.textContent='正在读取当天提交…';
+ try{
+  const data=await api('/api/daily-runs?'+new URLSearchParams({detail:day}));
+  if(!box.isConnected||!state?.signed_in||session!==state.csrf)return;
+  box.replaceChildren();
+  const list=element('ol',undefined,'daily-timeline');
+  for(const r of data.attempts){
+   const item=element('li'),status={success:'Zepp 已接收',unknown:'提交结果待确认',failed:'失败',skipped:'已跳过',running:'执行中',queued:'排队中',pending:'等待排队'}[r.status]||'待确认';
+   item.append(element('span',when(r.finished_at||r.created_at),'daily-time'),element('strong',steps(r.step)),element('span',(r.kind==='manual'?'手动':'自动')+' · '+status,'hint'));
+   list.append(item);
+  }
+  box.append(list);if(!data.attempts.length)box.append(element('p','没有计划提交记录。','hint'));
+  const button=element('button',data.has_more?'查看完整当天记录 →':'查看当天全部明细（含测试与核对） →','text-button');button.type='button';
+  button.onclick=()=>action(async()=>{page=0;$('filter-day').value=day;$('filter-status').value='all';setHistoryMode('details');await runs();});box.append(button);
+ }catch(e){delete box.dataset.loaded;if(box.isConnected)box.textContent='读取失败：'+e.message+'。收起后展开可重试。';}
+}
+async function loadDailyHistory(){
+ if(!state?.signed_in)return;
+ const request=++dailyRequest,session=state.csrf;
+ const data=await api('/api/daily-runs?'+new URLSearchParams({page:dailyPage,from:$('daily-from').value,to:$('daily-to').value}));
+ if(request!==dailyRequest||!state?.signed_in||state.csrf!==session)return;
+ const box=$('daily-list'),expanded=new Set([...box.querySelectorAll('details[open]')].map(e=>e.dataset.day));box.replaceChildren();
+ dailyMore=data.has_more;$('daily-prev').hidden=dailyPage===0;$('daily-next').hidden=!dailyMore;$('daily-page').textContent='第 '+(dailyPage+1)+' 页';
+ $('daily-updated').textContent='更新于 '+new Date().toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});
+ if(!data.days.length){box.append(element('p','这段时间没有计划提交记录。可调整日期范围，或在“全部明细”查看连接测试。','daily-empty'));return;}
+ for(const d of data.days){
+  const row=element('details',undefined,'daily-record');row.dataset.day=d.day;
+  const head=element('summary',undefined,'daily-row'),date=element('div'),value=element('div'),time=element('div'),status=element('div');
+  date.append(element('strong',d.day),element('small',d.day===data.today?'今天 · 尚未结束':'历史记录'));
+  value.append(element('small','最后被 Zepp 接收'),element('strong',d.final_step===null?'—':steps(d.final_step),'daily-step'));
+  time.append(element('small','接收时间'),element('span',d.final_at?new Date(d.final_at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'尚无接收记录'));
+  status.append(element('span',dayStatus(d),'badge '+(d.unknown_count||d.latest_status==='failed'?'attention':'')),element('small','已接收 '+d.accepted_count+' / '+d.attempts+' 次'));
+  head.append(date,value,time,status,element('span','展开','daily-expand'));
+  const detail=element('div',undefined,'daily-expanded');row.append(head,detail);
+  row.ontoggle=()=>{head.querySelector('.daily-expand').textContent=row.open?'收起':'展开';if(row.open&&!detail.dataset.loaded){detail.dataset.loaded='true';loadDayAttempts(d.day,detail);}};
+  box.append(row);if(expanded.has(d.day))row.open=true;
+ }
+}
+$('history-daily-tab').onclick=()=>setHistoryMode('daily');$('history-detail-tab').onclick=()=>setHistoryMode('details');
+$('daily-refresh').onclick=()=>action(loadDailyHistory);
+$('daily-filter').onsubmit=e=>{e.preventDefault();action(async()=>{dailyPage=0;await loadDailyHistory();});};
+$('daily-reset').onclick=()=>action(async()=>{dailyPage=0;$('daily-from').value='';$('daily-to').value='';await loadDailyHistory();});
+$('daily-prev').onclick=()=>action(async()=>{if(dailyPage>0)dailyPage--;await loadDailyHistory();});
+$('daily-next').onclick=()=>action(async()=>{if(dailyMore)dailyPage++;await loadDailyHistory();});
+document.querySelectorAll('[data-day-range]').forEach(b=>b.onclick=()=>action(async()=>{
+ const now=Date.now()+28800000,day=offset=>new Date(now-offset*86400000).toISOString().slice(0,10),range=b.dataset.dayRange;
+ $('daily-from').value=day(range==='yesterday'?1:range==='week'?6:0);$('daily-to').value=day(range==='yesterday'?1:0);dailyPage=0;await loadDailyHistory();
+}));
+setInterval(async()=>{if(!state?.signed_in||currentView!=='history'||historyMode!=='daily'||dailyPage!==0||document.hidden||busy||dailyPolling)return;dailyPolling=true;try{await loadDailyHistory();}catch(e){$('daily-updated').textContent='更新失败：'+e.message;}finally{dailyPolling=false;}},30000);

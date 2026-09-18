@@ -8,7 +8,7 @@ export async function history(env, accountId, url) {
   const page = Number(url.searchParams.get('page') || 0);
   const date = url.searchParams.get('day') || '';
   const filters = {
-    all:'1=1', active:"status IN ('pending','queued','running') OR verification IN ('checking','waiting')",
+    all:'1=1', push:"kind IN ('manual','schedule')", active:"status IN ('pending','queued','running') OR verification IN ('checking','waiting')",
     attention:"status IN ('failed','unknown','skipped') OR verification IN ('below_target','unavailable','inconsistent','summary_only')",
     matched:"verification='matched'", check:"kind IN ('check','verify')"
   };

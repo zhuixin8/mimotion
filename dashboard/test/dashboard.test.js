@@ -11,6 +11,40 @@ const origin='https://mimotion.test';
 const time=()=>Math.floor(Date.now()/1000);
 const day=()=>new Date(Date.now()+28800000).toISOString().slice(0,10);
 
+test('daily history uses last accepted cumulative target, excludes diagnostic reads and isolates accounts',async()=>{
+ const env=environment(),a=await account(env,'A'),b=await account(env,'B');
+ const date='2026-09-17',values=[5803,6287,12513,19469,19469,44754];
+ for(let i=0;i<values.length;i++){
+  addRun(env,'push'+i,'A','schedule','success',date);env.db.prepare('UPDATE runs SET step=?,finished_at=?,summary_step=?,detail_step=125 WHERE id=?').run(values[i],time()+i,values[i],'push'+i);
+  for(let j=0;j<2;j++){addRun(env,'verify'+i+j,'A','verify','success',date);env.db.prepare('UPDATE runs SET step=99999 WHERE id=?').run('verify'+i+j);}
+ }
+ addRun(env,'check-only','A','check','success','2026-09-18');addRun(env,'other','B','manual','success',date);
+ const res=await api(env,'/api/daily-runs?account_id=B',undefined,a);assert.equal(res.status,200);const data=await res.json();
+ assert.equal(data.days.length,1);const d=data.days[0];assert.equal(d.final_step,44754);assert.equal(d.accepted_count,6);assert.equal(d.attempts,6);assert.equal(d.detail_step,125);assert.equal(d.final_at,time()+5);
+ const detail=await (await api(env,'/api/daily-runs?detail='+date,undefined,a)).json();assert.equal(detail.attempts.length,6);assert.ok(detail.attempts.every(r=>r.kind==='schedule'));assert.ok(!detail.attempts.some(r=>r.id==='other'));
+ assert.equal((await (await api(env,'/api/daily-runs',undefined,b)).json()).days[0].attempts,1);
+ assert.equal((await api(env,'/api/daily-runs')).status,401);
+});
+test('daily history never substitutes pending, unknown or failed targets for an accepted value, and handles zero',async()=>{
+ const env=environment(),a=await account(env,'A'),date='2026-09-17';
+ for(const [id,status,step] of [['old','success',20000],['last','success',18000],['uncertain','unknown',50000],['failed','failed',60000],['active','queued',70000]]){
+  addRun(env,id,'A','manual',status,date);env.db.prepare('UPDATE runs SET step=? WHERE id=?').run(step,id);
+ }
+ addRun(env,'no-success','A','manual','failed','2026-09-16');addRun(env,'zero','A','manual','success','2026-09-15');env.db.prepare("UPDATE runs SET step=0 WHERE id='zero'").run();
+ const d=(await (await api(env,'/api/daily-runs',undefined,a)).json()).days;
+ assert.equal(d[0].final_step,18000);assert.equal(d[0].active_count,1);assert.equal(d[0].unknown_count,1);assert.equal(d[0].failed_count,1);assert.equal(d[0].latest_status,'queued');
+ assert.equal(d[1].final_step,null);assert.equal(d[1].final_at,null);assert.equal(d[2].final_step,0);
+});
+test('daily history filters by data date, paginates days and validates actual calendar dates',async()=>{
+ const env=environment(),a=await account(env,'A');
+ for(let i=1;i<=18;i++)addRun(env,'d'+i,'A','manual','success','2026-09-'+String(i).padStart(2,'0'));
+ const first=await (await api(env,'/api/daily-runs',undefined,a)).json(),second=await (await api(env,'/api/daily-runs?page=1',undefined,a)).json();
+ assert.equal(first.days.length,14);assert.equal(first.has_more,true);assert.equal(second.days.length,4);assert.equal(second.has_more,false);assert.equal(new Set([...first.days,...second.days].map(d=>d.day)).size,18);
+ const filtered=await (await api(env,'/api/daily-runs?from=2026-09-16&to=2026-09-17',undefined,a)).json();assert.deepEqual(filtered.days.map(d=>d.day),['2026-09-17','2026-09-16']);
+ for(const q of ['from=2026-02-30','detail=2026-02-30','detail=','page=-1','page=1.5','from=2026-09-18&to=2026-09-01'])assert.equal((await api(env,'/api/daily-runs?'+q,undefined,a)).status,400,q);
+ assert.equal((await (await api(env,'/api/daily-runs?detail=2001-01-01',undefined,a)).json()).attempts.length,0);
+});
+
 test('inline reconnect preserves account settings and membership, rotates session, stores no password and enqueues nothing',async(t)=>{
  for(const enabled of [0,1]){
   const env=environment(),id=await identity(env,'zepp-user:verified-user'),a=await account(env,id,enabled),mock=zeppMock(t);
