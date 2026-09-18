@@ -55,7 +55,7 @@ async function route(request, env) {
   if (['/admin','/admin/','/admin.js'].includes(path) || path.startsWith('/api/admin/')) throw new UserError('页面不存在。',404);
   if (!['GET','POST'].includes(request.method)) throw new UserError('不支持的请求。', 405);
   if (request.method === 'GET') {
-    if (path === '/athlete-v1.js') return new Response(avatarClient,{headers:{'content-type':'text/javascript; charset=utf-8','Cache-Control':'public, max-age=31536000, immutable'}});
+    if (path === '/athlete-v2.js') return new Response(avatarClient,{headers:{'content-type':'text/javascript; charset=utf-8','Cache-Control':'public, max-age=31536000, immutable'}});
     if (path === '/athlete-model-v1.glb.gz') return new Response(Uint8Array.from(atob(avatarModelBase64),c=>c.charCodeAt(0)),{headers:{'content-type':'application/gzip','Cache-Control':'public, max-age=31536000, immutable'}});
     if (path === '/athlete-license.txt') return new Response(avatarLicense,{headers:{'content-type':'text/plain; charset=utf-8'}});
     if (path === '/brand-icon-v1.webp' || path === '/favicon.ico') return new Response(Uint8Array.from(atob(brandIconBase64),c=>c.charCodeAt(0)),{headers:{'content-type':'image/webp'}});
