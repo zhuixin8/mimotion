@@ -1,4 +1,5 @@
 const $=id=>document.getElementById(id);
+let athlete=null,athleteLoading=null,athleteFailed=false;
 let historyMode='daily',dailyPage=0,dailyMore=false,dailyRequest=0,dailyPolling=false;
 let state=null,busy=false,polling=false,page=0,hasMore=false,nextPoll=0,currentView='overview',labClaims=null;
 const views={help:['帮助与支持','使用指南与按需排查。'],'sync-lab':['设备与同步诊断','分别核对设备、Zepp 明细与第三方同步。'],overview:['运行概览','查看今日提交和下次安排。'],plan:['步数计划','设置每日目标，管理自动执行。'],history:['执行记录','按天查看最后提交步数，按需展开过程。'],membership:['激活与续期','管理使用期，兑换激活码。']};
@@ -9,10 +10,18 @@ function showView(view,focus=false){
  $('view-title').textContent=views[currentView][0];$('view-description').textContent=views[currentView][1];
  if(focus)$('view-title').focus({preventScroll:true});
  if(currentView==='plan')renderSchedule();
+ syncAthlete();
  if(currentView==='history')setHistoryMode(historyMode);
  if(currentView==='sync-lab')loadLabHistory().catch(e=>notice(e.message,true));
 }
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>showView(b.dataset.view,true));
+function syncAthlete(){
+ const mount=state?.signed_in&&['overview','plan'].includes(currentView)?$(currentView+'-athlete-slot'):null;
+ if(athlete){athlete.update(state?.account,scheduleRuntime,scheduleReceivedAt,mount);return;}
+ if(!mount||athleteLoading||athleteFailed)return;
+ athleteLoading=import('/athlete-v1.js').then(module=>{athlete=module.createAvatar();syncAthlete();}).catch(()=>{athleteFailed=true;}).finally(()=>{athleteLoading=null;});
+}
+
 const when=t=>t?new Date(t*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';
 const steps=n=>n===null||n===undefined?'未读取':n.toLocaleString()+' 步';
 function syncAccess(access=state?.account?.membership){
@@ -35,6 +44,7 @@ function syncAccess(access=state?.account?.membership){
  $('overview-expiry').textContent=access.expires_at?'到期 '+when(access.expires_at):'兑换激活码即可开通';
  $('overview-plan').textContent=!active?'不可执行':state.account.needs_login?'需重新登录':state.account.enabled?'已开启':'已暂停';
  $('overview-range').textContent=Number(state.account.min_step).toLocaleString()+' – '+Number(state.account.max_step).toLocaleString()+' 步 / 天';
+ syncAthlete();
 }
 async function loadSite(){
  const site=await api('/api/site');document.querySelectorAll('[data-site-name]').forEach(e=>e.textContent=site.name);document.title=site.name+' · 我的控制台';document.querySelector('.brand').setAttribute('aria-label',site.name+' 首页');
@@ -58,6 +68,7 @@ function renderRuntime(runtime){
 
 }
 function renderSchedule(){
+ syncAthlete();
  if(!state?.signed_in||!scheduleRuntime)return;
  const now=scheduleRuntime.now? scheduleRuntime.now*1000+(Date.now()-scheduleReceivedAt):Date.now();
  const a=state.account,access=a.membership,next=scheduleRuntime.next;
@@ -166,7 +177,7 @@ $('logout').onclick=()=>action(async()=>{await api('/api/logout',{});await load(
 $('delete-account').onclick=()=>action(async()=>{if(!$('confirm-delete').checked)throw new Error('请先勾选删除确认。');await api('/api/delete',{confirm:'DELETE'});await load();notice('Zepp 凭据、设置和执行记录已删除；使用期与兑换记录保留。');});
 loadSite().catch(()=>{});
 load().catch(e=>{$('loading-panel').hidden=true;if(!state)$('login-panel').hidden=false;notice(e.message,true);});
-setInterval(async()=>{if(state?.signed_in&&currentView==='plan'&&!document.hidden)renderSchedule();if(!state?.signed_in||busy||polling||document.hidden||page!==0||Date.now()<nextPoll)return;polling=true;try{await runs();}catch(e){$('history-update').textContent='刷新失败：'+e.message;nextPoll=Date.now()+30000;}finally{polling=false;}},1000);
+setInterval(async()=>{if(state?.signed_in&&!document.hidden){if(currentView==='plan')renderSchedule();else if(currentView==='overview')syncAthlete();}if(!state?.signed_in||busy||polling||document.hidden||page!==0||Date.now()<nextPoll)return;polling=true;try{await runs();}catch(e){$('history-update').textContent='刷新失败：'+e.message;nextPoll=Date.now()+30000;}finally{polling=false;}},1000);
 
 const labNames={inspect:'只读核对',bind:'虚拟设备绑定',append:'分钟明细追加'};
 const labStates={checking:'检查中 / 结果未返回',submitted:'已记录提交意图，待核对',verified:'已读回验证',read:'只读完成',blocked:'已阻止',unconfirmed:'结果未确认'};

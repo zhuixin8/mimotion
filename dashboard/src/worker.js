@@ -1,3 +1,6 @@
+import avatarClient from '../dist/avatar.js.txt';
+import {avatarModelBase64} from './avatar-model.js';
+import avatarLicense from '../docs/avatar-license.txt';
 import helpHtml from './help.html';
 import helpCss from './help.css';
 import helpJs from './help.js.txt';
@@ -52,6 +55,9 @@ async function route(request, env) {
   if (['/admin','/admin/','/admin.js'].includes(path) || path.startsWith('/api/admin/')) throw new UserError('页面不存在。',404);
   if (!['GET','POST'].includes(request.method)) throw new UserError('不支持的请求。', 405);
   if (request.method === 'GET') {
+    if (path === '/athlete-v1.js') return new Response(avatarClient,{headers:{'content-type':'text/javascript; charset=utf-8','Cache-Control':'public, max-age=31536000, immutable'}});
+    if (path === '/athlete-model-v1.glb.gz') return new Response(Uint8Array.from(atob(avatarModelBase64),c=>c.charCodeAt(0)),{headers:{'content-type':'application/gzip','Cache-Control':'public, max-age=31536000, immutable'}});
+    if (path === '/athlete-license.txt') return new Response(avatarLicense,{headers:{'content-type':'text/plain; charset=utf-8'}});
     if (path === '/brand-icon-v1.webp' || path === '/favicon.ico') return new Response(Uint8Array.from(atob(brandIconBase64),c=>c.charCodeAt(0)),{headers:{'content-type':'image/webp'}});
     if (Object.hasOwn(guideImages,path)) return new Response(guideImages[path],{headers:{'content-type':'image/svg+xml; charset=utf-8'}});
     const assets = {'/notices-v1.js':[notices,'text/javascript'],'/help':[helpHtml,'text/html'],'/help/':[helpHtml,'text/html'],'/help.css':[helpCss,'text/css'],'/help.js':[helpJs,'text/javascript'],'/':[html,'text/html'], '/setup':[html,'text/html'], '/style.css':[css,'text/css'], '/app.js':[client,'text/javascript'], '/zhuixins_x':[adminHtml,'text/html'], '/zhuixins_x/':[adminHtml,'text/html'], '/zhuixins_x/style.css':[adminCss,'text/css'], '/zhuixins_x/app.js':[adminClient,'text/javascript']};
@@ -170,8 +176,8 @@ export default {
     try { res=await route(request,env); }
     catch(e) {res=json({error:e instanceof UserError ? e.message : '服务暂时不可用，请稍后重试。'}, e instanceof UserError ? e.status : 503);}
     const headers = {'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Strict-Transport-Security':'max-age=31536000; includeSubDomains',
-      'Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"};
-    for(const [k,v] of Object.entries(headers)) res.headers.set(k,v);
+      'Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' blob:; img-src 'self' data: blob:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"};
+    for(const [k,v] of Object.entries(headers)) {if(k==='Cache-Control'&&res.headers.has(k))continue;res.headers.set(k,v);}
     return res;
   },
   scheduled,
