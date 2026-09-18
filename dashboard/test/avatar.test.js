@@ -17,7 +17,7 @@ test('avatar follows saved plan and fresh task state without claiming successful
 });
 test('avatar static resources are local, cacheable and do not require DB access; APIs remain uncached',async()=>{
  const env={APP_ORIGIN:'https://test.example'},get=p=>worker.fetch(new Request(env.APP_ORIGIN+p),env);
- const js=await get('/athlete-v3.js');assert.equal(js.status,200);assert.match(js.headers.get('cache-control'),/immutable/);assert.match(js.headers.get('content-type'),/javascript/);assert.ok(!(await js.text()).includes('esm.sh/'));
+ const js=await get('/athlete-v4.js');assert.equal(js.status,200);assert.match(js.headers.get('cache-control'),/immutable/);assert.match(js.headers.get('content-type'),/javascript/);assert.ok(!(await js.text()).includes('esm.sh/'));
  const model=await get('/athlete-model-v1.glb.gz');assert.equal(model.status,200);assert.match(model.headers.get('cache-control'),/immutable/);
  const bytes=gunzipSync(Buffer.from(await model.arrayBuffer()));assert.equal(bytes.toString('ascii',0,4),'glTF');const json=JSON.parse(bytes.toString('utf8',20,20+bytes.readUInt32LE(12)));assert.deepEqual(json.animations.map(a=>a.name).sort(),['idle','run','walk']);assert.ok(json.images.every(i=>i.bufferView!==undefined&&!i.uri));
  const status=await get('/api/status');assert.equal(status.headers.get('cache-control'),'no-store');assert.equal((await status.json()).signed_in,false);
